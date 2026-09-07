@@ -3,7 +3,7 @@ name: Train & Evaluate Price Model
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["Scheduled Avito Scraper"]
+    workflows: ["Scheduled Avito Scraper", "Parallel Multi-Source Car Scraper"]
     types:
       - completed
   push:

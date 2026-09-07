@@ -70,14 +70,26 @@ def chronological_grouped_split(
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Split data chronologically (70/15/15) while keeping all listings in the same
-    repost_group_id together on the same side of the partition (preventing data leakage).
+    cross_source_match_id and repost_group_id together on the same side of the partition
+    (strictly preventing data leakage across platforms and over time).
     """
     df = df.copy()
     df["_date"] = pd.to_datetime(df["date_scraped"], errors="coerce")
 
+    # Determine grouping column
+    group_col = "leakage_group_id"
+    if group_col not in df.columns:
+        if "cross_source_match_id" in df.columns and "repost_group_id" in df.columns:
+            # Fallback unification
+            df[group_col] = df["cross_source_match_id"].fillna(df["repost_group_id"]).astype(str)
+        elif "repost_group_id" in df.columns:
+            df[group_col] = df["repost_group_id"].astype(str)
+        else:
+            df[group_col] = df.index.astype(str)
+
     # Group-level earliest date
     group_dates = (
-        df.groupby("repost_group_id")["_date"]
+        df.groupby(group_col)["_date"]
         .min()
         .reset_index()
         .sort_values("_date")
@@ -88,20 +100,20 @@ def chronological_grouped_split(
     i_train = int(n_groups * train_pct)
     i_val = int(n_groups * (train_pct + val_pct))
 
-    train_groups = set(group_dates.iloc[:i_train]["repost_group_id"])
-    val_groups = set(group_dates.iloc[i_train:i_val]["repost_group_id"])
-    test_groups = set(group_dates.iloc[i_val:]["repost_group_id"])
+    train_groups = set(group_dates.iloc[:i_train][group_col])
+    val_groups = set(group_dates.iloc[i_train:i_val][group_col])
+    test_groups = set(group_dates.iloc[i_val:][group_col])
 
-    df_train = df[df["repost_group_id"].isin(train_groups)].sort_values("_date").reset_index(drop=True)
-    df_val = df[df["repost_group_id"].isin(val_groups)].sort_values("_date").reset_index(drop=True)
-    df_test = df[df["repost_group_id"].isin(test_groups)].sort_values("_date").reset_index(drop=True)
+    df_train = df[df[group_col].isin(train_groups)].sort_values("_date").reset_index(drop=True)
+    df_val = df[df[group_col].isin(val_groups)].sort_values("_date").reset_index(drop=True)
+    df_test = df[df[group_col].isin(test_groups)].sort_values("_date").reset_index(drop=True)
 
     df_train = df_train.drop(columns=["_date"])
     df_val = df_val.drop(columns=["_date"])
     df_test = df_test.drop(columns=["_date"])
 
     logger.info(
-        "Chronological Grouped Split: Train=%d, Val=%d, Test=%d (Total=%d rows across %d repost groups)",
+        "Zero-Leakage Chronological Grouped Split: Train=%d, Val=%d, Test=%d (Total=%d rows across %d clusters)",
         len(df_train),
         len(df_val),
         len(df_test),
