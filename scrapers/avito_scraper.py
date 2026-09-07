@@ -22,7 +22,10 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 import pandas as pd
 
-from scrapers.base import BaseScraper, SCHEMA_FIELDS
+try:
+    from scrapers.base import BaseScraper, SCHEMA_FIELDS
+except ImportError:
+    from base import BaseScraper, SCHEMA_FIELDS
 
 logging.basicConfig(
     level=logging.INFO,

@@ -8,7 +8,7 @@ on:
       max_pages:
         description: 'Pages to scrape per source'
         required: false
-        default: '5'
+        default: '3'
 
 permissions:
   contents: write
@@ -32,16 +32,25 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'scrapers/requirements_scraper.txt'
 
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
-          pip install --upgrade pip
-          if [ -f scrapers/requirements_scraper.txt ]; then pip install -r scrapers/requirements_scraper.txt; fi
+          sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev build-essential
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scrapers/requirements_scraper.txt || pip install requests beautifulsoup4 lxml pandas pyarrow fake-useragent
+
+      - name: Environment Diagnostics
+        run: |
+          python -c "import sys; print('Python version:', sys.version)"
+          python scrapers/run_all.py --help || true
 
       - name: Run Scraper for ${{ matrix.source }}
         id: run_scraper
         run: |
           mkdir -p data/raw
-          python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 5 }}
+          python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 3 }}
 
       - name: Upload Scraped Artifact
         uses: actions/upload-artifact@v4

@@ -20,7 +20,10 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 import pandas as pd
 
-from scrapers.base import BaseScraper
+try:
+    from scrapers.base import BaseScraper
+except ImportError:
+    from base import BaseScraper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -160,7 +163,10 @@ class MoteurScraper(BaseScraper):
         cards = soup.find_all("div", class_=re.compile(r"row-item|item-ad|block-item|detail-annonce", re.I))
         if not cards:
             # Fallback to article or general container
-            cards = soup.find_all(["div", "article"], class_=re.compile(r"annonce|occasion", re.I))
+            cards = soup.find_all(["div", "article", "li"], class_=re.compile(r"annonce|occasion", re.I))
+        if not cards:
+            detail_links = soup.find_all("a", href=re.compile(r"detail-annonce", re.I))
+            cards = [a.find_parent("div") or a for a in detail_links]
 
         for card in cards:
             rec = self.parse_card(card, date_scraped)

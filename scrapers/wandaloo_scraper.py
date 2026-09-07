@@ -20,7 +20,10 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 import pandas as pd
 
-from scrapers.base import BaseScraper
+try:
+    from scrapers.base import BaseScraper
+except ImportError:
+    from base import BaseScraper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -152,6 +155,9 @@ class WandalooScraper(BaseScraper):
         items = []
 
         cards = soup.find_all(["li", "div", "article"], class_=re.compile(r"occasion-item|item|col", re.I))
+        if not cards:
+            detail_links = soup.find_all("a", href=re.compile(r"/occasion/.*\.html"))
+            cards = [a.find_parent(["li", "div"]) or a for a in detail_links]
         for card in cards:
             rec = self.parse_card(card, date_scraped)
             if rec:

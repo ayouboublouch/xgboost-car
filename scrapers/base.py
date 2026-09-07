@@ -19,13 +19,16 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-# Attempt to load curl_cffi for TLS impersonation; fallback to requests
 USE_CURL_CFFI = False
+requests = None
 try:
     from curl_cffi import requests as curl_requests
     USE_CURL_CFFI = True
 except ImportError:
-    import requests
+    try:
+        import requests
+    except ImportError:
+        requests = None
 
 import pandas as pd
 
@@ -92,8 +95,10 @@ class BaseScraper(abc.ABC):
         """Initialize HTTP session with TLS impersonation or standard headers."""
         if USE_CURL_CFFI:
             s = curl_requests.Session(impersonate="chrome124")
-        else:
+        elif requests is not None:
             s = requests.Session()
+        else:
+            raise ImportError("Neither curl_cffi nor requests is installed. Please run: pip install -r scrapers/requirements_scraper.txt")
         s.headers.update(
             {
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -120,21 +125,22 @@ class BaseScraper(abc.ABC):
     def fetch_page(
         self, url: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None
     ) -> Optional[str]:
-        """Fetch page content with retries and exponential backoff."""
+        """Fetch page content with retries, 15s timeout, and fallback."""
+        default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         for attempt in range(1, self.max_retries + 1):
             try:
-                self.session.headers["User-Agent"] = random.choice(USER_AGENTS)
+                self.session.headers["User-Agent"] = default_ua
                 if headers:
                     self.session.headers.update(headers)
 
-                response = self.session.get(url, params=params, timeout=20)
+                response = self.session.get(url, params=params, timeout=15)
                 if response.status_code == 200:
                     return response.text
                 elif response.status_code == 404:
                     logger.debug("[%s] 404 Not Found: %s", self.source_name, url)
                     return None
                 elif response.status_code in (403, 429):
-                    wait = 3.0 * attempt + random.uniform(1.0, 3.0)
+                    wait = 2.0 * attempt + random.uniform(0.5, 1.5)
                     logger.warning(
                         "[%s] HTTP %d on %s. Backoff %.1fs (attempt %d/%d)",
                         self.source_name,
@@ -151,14 +157,22 @@ class BaseScraper(abc.ABC):
                     )
             except Exception as e:
                 logger.warning(
-                    "[%s] Request error for %s: %s (attempt %d/%d)",
+                    "[%s] Request error for %s: %s (attempt %d/%d). Trying fallback...",
                     self.source_name,
                     url,
                     e,
                     attempt,
                     self.max_retries,
                 )
-                time.sleep(2.0 * attempt)
+                # Fallback directly using standard requests if session had issue
+                try:
+                    import requests as std_requests
+                    r = std_requests.get(url, params=params, headers={"User-Agent": default_ua}, timeout=15)
+                    if r.status_code == 200:
+                        return r.text
+                except Exception:
+                    pass
+                time.sleep(1.5 * attempt)
         return None
 
     def clean_numeric(self, val: Any) -> Optional[float]:
