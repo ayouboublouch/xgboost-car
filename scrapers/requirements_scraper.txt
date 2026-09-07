@@ -1,0 +1,8 @@
+# Scraper dependencies for Avito.ma
+requests>=2.31.0
+curl_cffi>=0.7.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+fake-useragent>=1.4.0

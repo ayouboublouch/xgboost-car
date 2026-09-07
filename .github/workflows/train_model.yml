@@ -1,0 +1,67 @@
+name: Train & Evaluate Price Model
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Scheduled Avito Scraper"]
+    types:
+      - completed
+  push:
+    branches:
+      - main
+    paths:
+      - 'data/raw/**'
+      - 'src/**'
+
+permissions:
+  contents: write
+
+jobs:
+  train-model:
+    # Only run if workflow_run succeeded or if triggered by push/manual dispatch
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Step 1 - Clean & Validate Raw Data (Phase 1)
+        run: python src/clean.py
+
+      - name: Step 2 - Feature Engineering & MNAR Imputation (Phase 2)
+        run: python src/features.py
+
+      - name: Step 3 - Chronological Split & CatBoost Training (Phases 3 & 4)
+        run: python src/train.py
+
+      - name: Commit and push trained models and reports
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage updated model and processed data
+          git add models/ data/processed/
+
+          if git diff --staged --quiet; then
+            echo "No model or artifact updates to commit."
+          else
+            git commit -m "Automated MLOps: update CatBoost model and evaluation metrics [skip ci]"
+            git pull --rebase origin main
+            git push origin main
+            echo "Successfully deployed new model artifacts to repository."
+          fi
