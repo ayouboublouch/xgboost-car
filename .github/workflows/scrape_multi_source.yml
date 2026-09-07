@@ -2,15 +2,13 @@ name: Parallel Multi-Source Car Scraper
 
 on:
   schedule:
-    # Run twice daily: at 02:00 and 14:00 UTC
     - cron: '0 2,14 * * *'
   workflow_dispatch:
     inputs:
       max_pages:
-        description: 'Maximum pages per platform'
+        description: 'Pages to scrape per source'
         required: false
-        type: number
-        default: 15
+        default: '5'
 
 permissions:
   contents: write
@@ -21,17 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         source: [avito, moteur, wandaloo, kifal, siaracash]
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -39,38 +34,52 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r scrapers/requirements_scraper.txt
+          pip install --upgrade pip
+          if [ -f scrapers/requirements_scraper.txt ]; then pip install -r scrapers/requirements_scraper.txt; fi
 
-      - name: Run ${{ matrix.source }} scraper
+      - name: Run Scraper for ${{ matrix.source }}
+        id: run_scraper
         run: |
-          MAX_PAGES=${{ github.event.inputs.max_pages || 15 }}
-          python scrapers/run_all.py --source ${{ matrix.source }} --max-pages $MAX_PAGES
+          mkdir -p data/raw
+          python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 5 }}
 
-      - name: Commit and push scraped batch
+      - name: Upload Scraped Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-data-${{ matrix.source }}
+          path: data/raw/
+          if-no-files-found: ignore
+
+  aggregate-and-commit:
+    name: Aggregate & Commit Multi-Source Data
+    needs: scrape
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download all scraped artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: raw-data-*
+          path: data/raw/
+          merge-multiple: true
+
+      - name: Commit and push newly collected data
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Rebase and push loop to safely handle concurrent matrix completions
-          for attempt in 1 2 3 4 5; do
-            echo "Attempt $attempt: synchronizing with origin main..."
-            git pull --rebase origin main || true
-            git add data/raw/
-
-            if git diff --staged --quiet; then
-              echo "No new listings to commit from ${{ matrix.source }}."
-              break
-            fi
-
-            git commit -m "chore(data): ingest new listings from ${{ matrix.source }} [skip ci]" || true
-
-            if git push origin main; then
-              echo "Successfully pushed batch from ${{ matrix.source }}."
-              break
-            fi
-
-            SLEEP_SEC=$(( attempt * 3 + RANDOM % 4 ))
-            echo "Push rejected due to concurrent matrix push. Retrying in ${SLEEP_SEC}s..."
-            sleep $SLEEP_SEC
-          done
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git status
+          git add data/raw/
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(data): ingest multi-source listings [skip ci]"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No new raw data detected to commit."
+          fi
