@@ -93,12 +93,15 @@ class BaseScraper(abc.ABC):
 
     def _init_session(self):
         """Initialize HTTP session with TLS impersonation or standard headers."""
+        s = None
         if USE_CURL_CFFI:
             s = curl_requests.Session(impersonate="chrome124")
         elif requests is not None:
             s = requests.Session()
         else:
-            raise ImportError("Neither curl_cffi nor requests is installed. Please run: pip install -r scrapers/requirements_scraper.txt")
+            logger.warning("[%s] Neither curl_cffi nor requests installed; using urllib fallback.", self.source_name)
+            return None
+
         s.headers.update(
             {
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -126,53 +129,77 @@ class BaseScraper(abc.ABC):
         self, url: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None
     ) -> Optional[str]:
         """Fetch page content with retries, 15s timeout, and fallback."""
-        default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        default_ua = random.choice(USER_AGENTS)
         for attempt in range(1, self.max_retries + 1):
-            try:
-                self.session.headers["User-Agent"] = default_ua
-                if headers:
-                    self.session.headers.update(headers)
+            if self.session is not None:
+                try:
+                    self.session.headers["User-Agent"] = default_ua
+                    if headers:
+                        self.session.headers.update(headers)
 
-                response = self.session.get(url, params=params, timeout=15)
-                if response.status_code == 200:
-                    return response.text
-                elif response.status_code == 404:
-                    logger.debug("[%s] 404 Not Found: %s", self.source_name, url)
-                    return None
-                elif response.status_code in (403, 429):
-                    wait = 2.0 * attempt + random.uniform(0.5, 1.5)
+                    response = self.session.get(url, params=params, timeout=15)
+                    if response.status_code == 200:
+                        return response.text
+                    elif response.status_code == 404:
+                        logger.debug("[%s] 404 Not Found: %s", self.source_name, url)
+                        return None
+                    elif response.status_code in (403, 429):
+                        wait = 2.0 * attempt + random.uniform(0.5, 1.5)
+                        logger.warning(
+                            "[%s] HTTP %d on %s. Backoff %.1fs (attempt %d/%d)",
+                            self.source_name,
+                            response.status_code,
+                            url,
+                            wait,
+                            attempt,
+                            self.max_retries,
+                        )
+                        time.sleep(wait)
+                    else:
+                        logger.warning(
+                            "[%s] Unexpected HTTP %d for %s", self.source_name, response.status_code, url
+                        )
+                except Exception as e:
                     logger.warning(
-                        "[%s] HTTP %d on %s. Backoff %.1fs (attempt %d/%d)",
+                        "[%s] Request error for %s: %s (attempt %d/%d). Trying fallback...",
                         self.source_name,
-                        response.status_code,
                         url,
-                        wait,
+                        e,
                         attempt,
                         self.max_retries,
                     )
-                    time.sleep(wait)
-                else:
-                    logger.warning(
-                        "[%s] Unexpected HTTP %d for %s", self.source_name, response.status_code, url
-                    )
-            except Exception as e:
-                logger.warning(
-                    "[%s] Request error for %s: %s (attempt %d/%d). Trying fallback...",
-                    self.source_name,
-                    url,
-                    e,
-                    attempt,
-                    self.max_retries,
-                )
-                # Fallback directly using standard requests if session had issue
-                try:
-                    import requests as std_requests
-                    r = std_requests.get(url, params=params, headers={"User-Agent": default_ua}, timeout=15)
+            
+            # Fallback directly using standard requests or urllib if session had issue
+            try:
+                if requests is not None:
+                    r = requests.get(url, params=params, headers={"User-Agent": default_ua}, timeout=15)
                     if r.status_code == 200:
                         return r.text
-                except Exception:
-                    pass
-                time.sleep(1.5 * attempt)
+                else:
+                    import urllib.request
+                    import ssl
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    full_url = url
+                    if params:
+                        from urllib.parse import urlencode
+                        sep = "&" if "?" in url else "?"
+                        full_url = f"{url}{sep}{urlencode(params)}"
+                    req = urllib.request.Request(
+                        full_url,
+                        headers={
+                            "User-Agent": default_ua,
+                            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8",
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                        }
+                    )
+                    with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+                        if resp.status == 200:
+                            return resp.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            time.sleep(1.5 * attempt)
         return None
 
     def clean_numeric(self, val: Any) -> Optional[float]:
@@ -249,20 +276,26 @@ class BaseScraper(abc.ABC):
         pass
 
     def save_output(self, df: pd.DataFrame) -> None:
-        """Persist harmonized DataFrame to Parquet & CSV."""
+        """Persist harmonized DataFrame to Parquet & CSV. Fails loudly on empty result."""
+        if df is None or df.empty or len(df) == 0:
+            raise RuntimeError(
+                f"Scraper for {self.source_name} returned 0 rows. Likely blocked by anti-bot."
+            )
+
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         parquet_path = self.output_dir / f"{self.source_name}_{today_str}.parquet"
         csv_path = self.output_dir / f"{self.source_name}_{today_str}.csv"
 
-        if df.empty:
-            logger.warning("[%s] No records to save. Writing empty template with schema.", self.source_name)
-            df = pd.DataFrame(columns=SCHEMA_FIELDS)
-        else:
-            # Enforce schema columns
-            for col in SCHEMA_FIELDS:
-                if col not in df.columns:
-                    df[col] = None
-            df = df[SCHEMA_FIELDS].drop_duplicates(subset=["listing_id"])
+        # Enforce schema columns
+        for col in SCHEMA_FIELDS:
+            if col not in df.columns:
+                df[col] = None
+        df = df[SCHEMA_FIELDS].drop_duplicates(subset=["listing_id"])
+
+        if len(df) == 0:
+            raise RuntimeError(
+                f"Scraper for {self.source_name} returned 0 rows after deduplication. Likely blocked by anti-bot."
+            )
 
         try:
             df.to_parquet(parquet_path, index=False, engine="pyarrow")

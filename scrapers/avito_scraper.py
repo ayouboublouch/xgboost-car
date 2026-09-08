@@ -19,7 +19,11 @@ import sys
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+
 import pandas as pd
 
 try:
@@ -322,12 +326,38 @@ class AvitoScraper(BaseScraper):
         )
 
         all_records = []
+        consecutive_empty = 0
+        total_queries = 0
+
         for year in years:
             for letter in letters:
                 for p in range(1, max_pages + 1):
+                    total_queries += 1
                     batch = self.scrape_query(query=letter, year=year, page=p)
-                    all_records.extend(batch)
+                    if not batch:
+                        consecutive_empty += 1
+                        # If first 8 queries yield 0 records, IP is Cloudflare-blocked; abort early
+                        if len(all_records) == 0 and consecutive_empty >= 8:
+                            logger.error(
+                                "[%s] %d consecutive empty queries and 0 total records. "
+                                "Runner IP is blocked by Cloudflare challenge. Aborting early to avoid wasting CI time.",
+                                self.source_name,
+                                consecutive_empty,
+                            )
+                            break
+                    else:
+                        consecutive_empty = 0
+                        all_records.extend(batch)
                     self.sleep()
+                if len(all_records) == 0 and consecutive_empty >= 8:
+                    break
+            if len(all_records) == 0 and consecutive_empty >= 8:
+                break
+
+        assert len(all_records) > 0, (
+            f"[{self.source_name}] Scraper harvested 0 records! "
+            "Runner is blocked by Cloudflare anti-bot challenge. Failing loudly to prevent saving empty CSV."
+        )
 
         df = pd.DataFrame(all_records)
         self.save_output(df)

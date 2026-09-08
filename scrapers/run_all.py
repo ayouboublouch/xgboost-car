@@ -3,12 +3,15 @@
 Multi-Source Scraper Orchestrator for Autohouse.ma MLOps Pipeline
 -----------------------------------------------------------------
 CLI runner supporting:
-  python scrapers/run_all.py --source avito --max-pages 3
-  python scrapers/run_all.py --source moteur --max-pages 3
-  python scrapers/run_all.py --source wandaloo --max-pages 3
-  python scrapers/run_all.py --source kifal --max-pages 3
-  python scrapers/run_all.py --source siaracash --max-pages 3
-  python scrapers/run_all.py --source all --max-pages 3
+  python scrapers/run_all.py --source moteur --max-pages 60
+  python scrapers/run_all.py --source wandaloo --max-pages 30
+  python scrapers/run_all.py --source avito --max-pages 10
+  python scrapers/run_all.py --source all --max-pages 30
+
+Enforces:
+- Default primary source: 'moteur'
+- Validation: DataFrame must have at least 50 rows before writing to disk
+- Loud failure: If a source yields 0 rows, raises RuntimeError(f"Scraper for {source} returned 0 rows. Likely blocked by anti-bot.")
 """
 
 import argparse
@@ -16,6 +19,7 @@ import logging
 import sys
 import traceback
 from pathlib import Path
+from typing import Dict, Type
 
 # Ensure repository root and scrapers directory are in sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -25,38 +29,54 @@ SCRAPERS_DIR = Path(__file__).resolve().parent
 if str(SCRAPERS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRAPERS_DIR))
 
-from typing import Dict, Type
 import pandas as pd
 
 try:
     from scrapers.base import BaseScraper, SCHEMA_FIELDS
-    from scrapers.avito_scraper import AvitoScraper
-    from scrapers.moteur_scraper import MoteurScraper
-    from scrapers.wandaloo_scraper import WandalooScraper
-    from scrapers.kifal_scraper import KifalScraper
-    from scrapers.siaracash_scraper import SiaraCashScraper
 except ImportError:
     from base import BaseScraper, SCHEMA_FIELDS
-    from avito_scraper import AvitoScraper
-    from moteur_scraper import MoteurScraper
-    from wandaloo_scraper import WandalooScraper
-    from kifal_scraper import KifalScraper
-    from siaracash_scraper import SiaraCashScraper
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-logger = logging.getLogger("scraper.runner")
+def get_scraper_class(source: str) -> Type[BaseScraper]:
+    """Lazy loader for scrapers to ensure smooth CLI operation and resilience."""
+    if source == "moteur":
+        try:
+            from scrapers.moteur_scraper import MoteurScraper
+            return MoteurScraper
+        except ImportError:
+            from moteur_scraper import MoteurScraper
+            return MoteurScraper
+    elif source == "wandaloo":
+        try:
+            from scrapers.wandaloo_scraper import WandalooScraper
+            return WandalooScraper
+        except ImportError:
+            from wandaloo_scraper import WandalooScraper
+            return WandalooScraper
+    elif source == "avito":
+        try:
+            from scrapers.avito_scraper import AvitoScraper
+            return AvitoScraper
+        except ImportError:
+            from avito_scraper import AvitoScraper
+            return AvitoScraper
+    elif source == "kifal":
+        try:
+            from scrapers.kifal_scraper import KifalScraper
+            return KifalScraper
+        except ImportError:
+            from kifal_scraper import KifalScraper
+            return KifalScraper
+    elif source == "siaracash":
+        try:
+            from scrapers.siaracash_scraper import SiaraCashScraper
+            return SiaraCashScraper
+        except ImportError:
+            from siaracash_scraper import SiaraCashScraper
+            return SiaraCashScraper
+    else:
+        raise ValueError(f"Unknown scraper source: '{source}'")
 
-REGISTRY: Dict[str, Type[BaseScraper]] = {
-    "avito": AvitoScraper,
-    "moteur": MoteurScraper,
-    "wandaloo": WandalooScraper,
-    "kifal": KifalScraper,
-    "siaracash": SiaraCashScraper,
-}
+AVAILABLE_SOURCES = ["moteur", "wandaloo", "avito", "kifal", "siaracash"]
 
 
 def run():
@@ -64,15 +84,21 @@ def run():
     parser.add_argument(
         "--source",
         type=str,
-        default="all",
-        choices=["all", "avito", "moteur", "wandaloo", "kifal", "siaracash"],
-        help="Target platform to scrape (default: all)",
+        default="moteur",
+        choices=["moteur", "wandaloo", "avito", "kifal", "siaracash", "all"],
+        help="Target platform to scrape (default: moteur)",
     )
     parser.add_argument(
         "--max-pages",
         type=int,
-        default=3,
-        help="Maximum pages to scrape per provider (default: 3)",
+        default=60,
+        help="Maximum pages to scrape per provider (default: 60)",
+    )
+    parser.add_argument(
+        "--min-rows",
+        type=int,
+        default=50,
+        help="Minimum validated rows required before disk persistence (default: 50)",
     )
     parser.add_argument(
         "--output-dir",
@@ -85,43 +111,48 @@ def run():
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    targets = list(REGISTRY.keys()) if args.source == "all" else [args.source]
+    targets = AVAILABLE_SOURCES if args.source == "all" else [args.source]
 
     logger.info("==========================================================")
     logger.info("Executing Multi-Source Scrapers: %s", targets)
-    logger.info("Max pages per source: %d | Output dir: %s", args.max_pages, args.output_dir)
+    logger.info("Primary source: %s | Max pages: %d | Min rows: %d", args.source, args.max_pages, args.min_rows)
+    logger.info("Output directory: %s", args.output_dir)
     logger.info("==========================================================")
 
     summary = {}
 
     for src in targets:
-        cls = REGISTRY.get(src)
-        if not cls:
-            logger.warning("Unknown source '%s', skipping.", src)
+        try:
+            cls = get_scraper_class(src)
+        except Exception as e:
+            logger.warning("Could not load scraper for '%s': %s. Skipping.", src, e)
             continue
 
         logger.info("\n>>> Starting provider: %s ...", src)
-        records_count = 0
+        scraper = cls(output_dir=args.output_dir)
+        df = scraper.scrape(max_pages=args.max_pages)
 
-        # Global try/except to prevent failure if network / WAF blocks
-        try:
-            scraper = cls(output_dir=args.output_dir)
-            df = scraper.scrape(max_pages=args.max_pages)
-            if df is not None and not df.empty:
-                records_count = len(df)
-            logger.info(">>> Provider %s finished with %d records.", src, records_count)
-        except Exception as e:
-            logger.error(">>> Provider %s encountered an error: %s", src, e)
-            traceback.print_exc()
-            records_count = 0
+        # Fail loudly if 0 rows returned
+        if df is None or len(df) == 0:
+            raise RuntimeError(f"Scraper for {src} returned 0 rows. Likely blocked by anti-bot.")
 
-        # Fallback dummy generation if no listings extracted
-        if records_count == 0:
-            dummy_file = output_path / f"dummy_{src}.csv"
-            logger.info("Generating valid dummy file for artifact upload: %s", dummy_file)
-            dummy_df = pd.DataFrame(columns=SCHEMA_FIELDS)
-            dummy_df.to_csv(dummy_file, index=False, encoding="utf-8")
+        # Validate minimum rows threshold
+        if len(df) < args.min_rows:
+            if args.max_pages >= 5:
+                raise RuntimeError(
+                    f"Scraper for {src} returned {len(df)} rows, failing the minimum threshold of {args.min_rows} rows."
+                )
+            else:
+                logger.warning(
+                    ">>> Provider %s returned %d rows (< threshold of %d), accepted due to low max_pages (%d).",
+                    src,
+                    len(df),
+                    args.min_rows,
+                    args.max_pages,
+                )
 
+        records_count = len(df)
+        logger.info(">>> Provider %s finished with %d verified records.", src, records_count)
         summary[src] = records_count
 
     logger.info("\n==========================================================")
@@ -132,9 +163,6 @@ def run():
         total += count
     logger.info("Total harvested across all sources: %d records", total)
     logger.info("==========================================================")
-
-    # Always exit 0 to prevent GitHub Actions matrix runner crashes
-    sys.exit(0)
 
 
 if __name__ == "__main__":

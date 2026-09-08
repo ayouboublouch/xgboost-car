@@ -1,0 +1,91 @@
+name: Dedicated Fast Moteur.ma Scraper
+
+on:
+  schedule:
+    - cron: '0 2,14 * * *'
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: 'Pages to scrape on Moteur.ma (default: 60)'
+        required: false
+        default: '60'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scrape-moteur-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scrape_moteur:
+    name: Scrape Moteur.ma & Commit Data
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install System and Python Dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev build-essential
+          pip install --upgrade pip
+          pip install -r scrapers/requirements_scraper.txt
+
+      - name: Runner Diagnostics
+        run: |
+          python -c "import sys, pandas, pyarrow; print('Environment OK. Python:', sys.version)"
+          python scrapers/run_all.py --help
+
+      - name: Execute Moteur.ma Scraper
+        run: |
+          PAGES="${{ github.event.inputs.max_pages || '60' }}"
+          echo "Launching Moteur.ma crawler for ${PAGES} pages..."
+          python scrapers/run_all.py --source moteur --max-pages "${PAGES}" --min-rows 50
+
+      - name: Validate Harvested Dataset
+        run: |
+          CSV_FILE=$(ls data/raw/moteur_*.csv 2>/dev/null | tail -n 1)
+          if [ -z "$CSV_FILE" ]; then
+            echo "::error::No Moteur CSV output was generated in data/raw!"
+            exit 1
+          fi
+          FILE_SIZE=$(wc -c < "$CSV_FILE")
+          LINE_COUNT=$(wc -l < "$CSV_FILE")
+          echo "Harvested CSV: $CSV_FILE"
+          echo "File size: ${FILE_SIZE} bytes | Line count: ${LINE_COUNT}"
+          if [ "$LINE_COUNT" -lt 51 ]; then
+            echo "::error::CSV contains fewer than 50 data rows (${LINE_COUNT} lines)! Blocked by anti-bot or invalid selectors."
+            exit 1
+          fi
+          echo "Dataset validation successful: ${LINE_COUNT} lines generated."
+
+      - name: Upload Dataset Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: moteur-dataset
+          path: data/raw/moteur_*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Commit & Push Dataset to Main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          git add data/raw/moteur_*.csv data/raw/moteur_*.parquet
+          if git diff --staged --quiet; then
+            echo "No changes to commit (data already up-to-date)."
+          else
+            git commit -m "chore(data): automated Moteur.ma data ingestion [skip ci]"
+            git push origin main
+          fi

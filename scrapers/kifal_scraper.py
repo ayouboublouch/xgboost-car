@@ -18,7 +18,10 @@ import sys
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 import pandas as pd
 
 try:
