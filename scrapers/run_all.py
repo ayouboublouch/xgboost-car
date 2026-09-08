@@ -98,8 +98,8 @@ def run():
     parser.add_argument(
         "--max-pages",
         type=int,
-        default=60,
-        help="Maximum pages to scrape per provider (default: 60)",
+        default=30,
+        help="Maximum pages to scrape per provider (default: 30)",
     )
     parser.add_argument(
         "--min-rows",
@@ -146,26 +146,9 @@ def run():
             logger.warning(">>> Provider %s encountered exception: %s", src, e)
             df = None
 
-        # Graceful fallback if 0 rows returned due to datacenter IP blocking
         if df is None or len(df) == 0:
-            logger.warning(
-                "WARNING: Datacenter IP was challenged by target website. "
-                "Generating fallback batch from historical distribution or saving partial data."
-            )
-            seed_path = output_path / "used_car_training_combined.csv"
-            if seed_path.exists():
-                try:
-                    seed_df = pd.read_csv(seed_path, low_memory=False)
-                    src_match = seed_df[seed_df["source"].astype(str).str.lower() == src.lower()]
-                    fallback_df = src_match.copy() if len(src_match) >= 30 else seed_df.head(150).copy()
-                    fallback_df["source"] = src
-                    fallback_df["date_scraped"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-                    scraper.save_output(fallback_df)
-                    records_count = len(fallback_df)
-                    logger.info(">>> Provider %s populated %d verified fallback records from %s.", src, records_count, seed_path.name)
-                except Exception as ex:
-                    logger.warning("Failed to populate seed fallback for %s: %s", src, ex)
-                    records_count = 0
+            logger.warning(">>> Provider %s yielded 0 records. Writing nothing.", src)
+            records_count = 0
 
         summary[src] = records_count
         logger.info(">>> Provider %s finished with %d verified records.", src, records_count)

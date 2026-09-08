@@ -150,7 +150,7 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
     - price within 5%
     Assigns shared cross_source_match_id and computes unified leakage_group_id.
     """
-    df = df.copy()
+    df = df.reset_index(drop=True)
     n = len(df)
     logger.info("Computing cross-source matches across %d listings ...", n)
 
@@ -162,9 +162,9 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
     leakage_uf = UnionFind()
 
     # Pre-group by clean brand, model, year to optimize matching complexity
-    temp_brand = df["brand"].fillna("").astype(str).str.lower().str.strip()
-    temp_model = df["model"].fillna("").astype(str).str.lower().str.strip()
-    temp_year = df["year"].fillna(-1).astype(float)
+    temp_brand = df["brand"].fillna("").astype(str).str.lower().str.strip().values
+    temp_model = df["model"].fillna("").astype(str).str.lower().str.strip().values
+    temp_year = df["year"].fillna(-1).astype(float).values
     temp_mileage = df["mileage_km"].values
     temp_price = df["price_mad"].values
     temp_source = df["source"].fillna("").astype(str).values
@@ -285,14 +285,25 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
         except Exception as e:
             logger.warning("Could not load baseline seed file %s: %s", seed_file.name, e)
 
+    scraped_frames = []
     parquet_files = sorted(list(raw_dir.glob("*.parquet")))
     for pf in parquet_files:
         try:
             df_p = pd.read_parquet(pf)
-            if not df_p.empty:
-                logger.info("Loaded %d rows from %s", len(df_p), pf.name)
-                frames.append(df_p)
-                loaded_stems.add(pf.stem)
+            if not df_p.empty and len(df_p) > 0:
+                valid_mask = (
+                    df_p["brand"].notna()
+                    & (df_p["brand"].astype(str).str.strip() != "")
+                    & (df_p["brand"].astype(str).str.lower() != "nan")
+                    & df_p["price_mad"].notna()
+                )
+                valid_rows = df_p[valid_mask]
+                if len(valid_rows) > 0:
+                    logger.info("Loaded %d valid scraped rows from %s", len(valid_rows), pf.name)
+                    scraped_frames.append(valid_rows)
+                    loaded_stems.add(pf.stem)
+                else:
+                    logger.warning("Skipping corrupted file %s (0 rows with valid brand and price)", pf.name)
         except Exception as e:
             logger.warning("Could not read %s: %s", pf.name, e)
 
@@ -302,11 +313,26 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
             continue
         try:
             df_c = pd.read_csv(cf, low_memory=False)
-            if not df_c.empty:
-                logger.info("Loaded %d rows from %s", len(df_c), cf.name)
-                frames.append(df_c)
+            if not df_c.empty and len(df_c) > 0:
+                valid_mask = (
+                    df_c["brand"].notna()
+                    & (df_c["brand"].astype(str).str.strip() != "")
+                    & (df_c["brand"].astype(str).str.lower() != "nan")
+                    & df_c["price_mad"].notna()
+                )
+                valid_rows = df_c[valid_mask]
+                if len(valid_rows) > 0:
+                    logger.info("Loaded %d valid scraped rows from %s", len(valid_rows), cf.name)
+                    scraped_frames.append(valid_rows)
+                else:
+                    logger.warning("Skipping corrupted file %s (0 rows with valid brand and price)", cf.name)
         except Exception as e:
             logger.warning("Could not read %s: %s", cf.name, e)
+
+    if scraped_frames:
+        frames.extend(scraped_frames)
+    else:
+        logger.info("No additional valid scraped batches detected in %s; training strictly on baseline seed dataset.", raw_dir)
 
     if not frames:
         raise FileNotFoundError(f"No parquet or csv files found in {raw_dir}")
@@ -318,6 +344,33 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Execute validation, outlier marking, type casting, deduplication, and cross-source matching."""
+    # Filter out corrupted rows: immediately drop any row where brand, model, price_mad, or year is NaN or empty string
+    for c in ["brand", "model"]:
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str).str.strip()
+    for c in ["price_mad", "year"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    corrupted_mask = (
+        (df["brand"] == "")
+        | (df["brand"].str.lower() == "nan")
+        | (df["model"] == "")
+        | (df["model"].str.lower() == "nan")
+        | df["price_mad"].isna()
+        | (df["price_mad"] <= 0)
+        | df["year"].isna()
+        | (df["year"] < 1980)
+        | (df["year"] > 2027)
+    )
+    n_corrupted = corrupted_mask.sum()
+    if n_corrupted > 0:
+        logger.warning(
+            "Immediately dropped %d corrupted rows missing mandatory fields (brand, model, price_mad, year)",
+            n_corrupted,
+        )
+        df = df[~corrupted_mask].copy()
+
     # Deduplicate primarily on (source, listing_id) or url
     if "listing_id" in df.columns and "source" in df.columns:
         df["listing_id"] = df["listing_id"].astype(str)

@@ -345,31 +345,13 @@ class BaseScraper(abc.ABC):
         pass
 
     def save_output(self, df: pd.DataFrame) -> None:
-        """Persist harmonized DataFrame to Parquet & CSV with seed fallback."""
+        """Persist harmonized DataFrame to Parquet & CSV."""
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         parquet_path = self.output_dir / f"{self.source_name}_{today_str}.parquet"
         csv_path = self.output_dir / f"{self.source_name}_{today_str}.csv"
 
         if df is None or df.empty or len(df) == 0:
-            logger.warning(
-                "WARNING: Datacenter IP was challenged by target website. "
-                "Generating fallback batch from historical distribution or saving partial data."
-            )
-            seed_path = self.output_dir / "used_car_training_combined.csv"
-            if seed_path.exists():
-                try:
-                    seed_df = pd.read_csv(seed_path, low_memory=False)
-                    src_match = seed_df[seed_df["source"].astype(str).str.lower() == self.source_name.lower()]
-                    fallback_df = src_match if len(src_match) >= 20 else seed_df.head(100).copy()
-                    fallback_df["source"] = self.source_name
-                    fallback_df["date_scraped"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    df = fallback_df
-                    logger.info("[%s] Successfully loaded %d fallback records from seed dataset %s", self.source_name, len(df), seed_path.name)
-                except Exception as e:
-                    logger.warning("[%s] Failed to load fallback dataset: %s", self.source_name, e)
-
-        if df is None or df.empty or len(df) == 0:
-            logger.warning("[%s] No records available to save.", self.source_name)
+            logger.warning("[%s] Scraper harvested 0 records. Writing nothing.", self.source_name)
             return
 
         # Enforce schema columns

@@ -87,26 +87,65 @@ class MoteurScraper(BaseScraper):
         slug = link_m.group(3) or ""
         full_url = urljoin("https://www.moteur.ma", href)
 
-        # Title
-        title_m = re.search(r'class=["\'][^"\']*ads-index-title[^"\']*["\']>\s*(.*?)\s*</h', block, re.DOTALL)
-        if not title_m:
-            title_m = re.search(r'alt=["\']([^"\']+)["\']\s+class=["\'][^"\']*cover-image', block)
-        title_raw = title_m.group(1).strip() if title_m else ""
+        # 1. Title Extraction
+        title_raw = ""
+        title_m = re.search(
+            r'<(?:h\d|div|a|p)[^>]*class=["\'][^"\']*(?:ads-index-title|title)[^"\']*["\'][^>]*>\s*(.*?)\s*</(?:h\d|div|a|p)>',
+            block,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if title_m:
+            title_raw = re.sub(r'<[^>]+>', '', title_m.group(1)).strip()
+        if not title_raw:
+            alt_m = re.search(r'alt=["\']([^"\']+)["\']', block)
+            if alt_m and "moteur" not in alt_m.group(1).lower():
+                title_raw = alt_m.group(1).strip()
 
-        # City
+        # Parse slug for brand & model resolution
+        slug_clean = re.sub(r'\.html$', '', slug).strip()
+        slug_clean = slug_clean.split('?')[0].split('#')[0]
+        slug_parts = [p for p in slug_clean.split('-') if p]
+
+        # 2. Brand & Model Resolution
+        brand = ""
+        model = ""
+        if title_raw:
+            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s]', ' ', title_raw).split() if t]
+            if tokens:
+                brand = tokens[0].capitalize()
+                model = " ".join(tokens[1:]).capitalize() if len(tokens) > 1 else ""
+
+        # Fallback to slug if title was empty or only provided one token
+        if not brand or not model:
+            if slug_parts:
+                if not brand:
+                    brand = slug_parts[0].capitalize()
+                if not model:
+                    model = " ".join(slug_parts[1:]).capitalize() if len(slug_parts) > 1 else "Autre"
+
+        # Never leave brand or model empty
+        if not brand:
+            brand = "Autre"
+        if not model:
+            model = "Autre"
+
+        if not title_raw:
+            title_raw = f"{brand} {model}".strip()
+
+        # 3. City
         city_m = re.search(r'fa-map-marker[^>]*></i>\s*([^\s<]+)', block)
         city = city_m.group(1).strip() if city_m else ""
 
-        # Date posted
+        # 4. Date posted
         timeago_m = re.search(r'class=["\']timeago["\']\s+data-time=["\']([^"\']+)["\']', block)
         date_posted = timeago_m.group(1)[:10] if timeago_m else date_scraped[:10]
 
-        # Description
-        desc_m = re.search(r'class=["\'][^"\']*ad-desc[^"\']*["\']>\s*(.*?)\s*</p>', block, re.DOTALL)
+        # 5. Description
+        desc_m = re.search(r'class=["\'][^"\']*ad-desc[^"\']*["\']>\s*(.*?)\s*</p>', block, re.DOTALL | re.IGNORECASE)
         description_raw = desc_m.group(1).strip() if desc_m else ""
 
-        # Price in MAD
-        price_m = re.search(r'class=["\'][^"\']*ad-price-grid[^"\']*["\']>\s*(.*?)\s*</h4>', block, re.DOTALL)
+        # 6. Price in MAD: Parse numeric from .ad-price-grid or price tag; if 'Appeler' / 'Demande', set NaN
+        price_m = re.search(r'class=["\'][^"\']*(?:ad-price-grid|price|prix)[^"\']*["\'][^>]*>\s*(.*?)\s*</', block, re.DOTALL | re.IGNORECASE)
         price_raw = price_m.group(1).strip() if price_m else ""
         price_mad = None
         if price_raw and "appeler" not in price_raw.lower() and "demande" not in price_raw.lower():
@@ -117,87 +156,65 @@ class MoteurScraper(BaseScraper):
                     price_mad = float(clean_p)
                 except ValueError:
                     price_mad = None
+        if price_mad is None:
+            pm2 = re.search(r'(\d[\d\s\xa0]{3,})\s*(?:DH|MAD|Dhs)\b', block, re.IGNORECASE)
+            if pm2:
+                try:
+                    price_mad = float(re.sub(r'[\s\xa0,.]', '', pm2.group(1)))
+                except ValueError:
+                    price_mad = None
 
-        # Year
-        year_m = re.search(r'fa-calendar\s+me-1["\']></i>\s*(\d{4})', block)
-        year = int(year_m.group(1)) if year_m else None
+        # 7. Year: Parse 4-digit integer (2000-2026) from <span title="Année"> or .fa-calendar
+        year = None
+        year_m = re.search(r'(?:title=["\'](?:Année|Annee)["\'][^>]*>|fa-calendar[^>]*></i>)\s*(\d{4})', block, re.IGNORECASE)
+        if year_m:
+            y_val = int(year_m.group(1))
+            if 1980 <= y_val <= 2027:
+                year = y_val
+        if not year:
+            ym = re.search(r'\b(20[0-2]\d|19[8-9]\d)\b', block)
+            if ym:
+                year = int(ym.group(1))
 
-        # Transmission
-        trans_m = re.search(r'fa-cog\s+me-1["\']></i>\s*([A-Za-zÀ-ÿ]+)', block)
-        trans_raw = trans_m.group(1).strip() if trans_m else ""
+        # 8. Transmission: Parse 'Automatique' or 'Manuelle'
+        trans_m = re.search(r'fa-cog[^>]*></i>\s*([A-Za-zÀ-ÿ]+)', block, re.IGNORECASE)
+        trans_raw = trans_m.group(1).strip().lower() if trans_m else block.lower()
         transmission = ""
-        if "auto" in trans_raw.lower():
+        if "automatique" in trans_raw or "auto" in trans_raw:
             transmission = "Automatique"
-        elif "man" in trans_raw.lower():
+        elif "manuelle" in trans_raw or "manuel" in trans_raw:
             transmission = "Manuelle"
 
-        # Fuel type
-        fuel_m = re.search(r'fa-tachometer\s+me-1["\']></i>\s*([A-Za-zÀ-ÿ]+)', block)
-        fuel_raw = fuel_m.group(1).strip() if fuel_m else ""
+        # 9. Fuel type: Parse 'Diesel', 'Essence', 'Hybride', or 'Electrique'
+        fuel_m = re.search(r'fa-tachometer[^>]*></i>\s*([A-Za-zÀ-ÿ]+)', block, re.IGNORECASE)
+        fuel_raw = fuel_m.group(1).strip().lower() if fuel_m else block.lower()
         fuel_type = ""
-        if "diesel" in fuel_raw.lower():
+        if "diesel" in fuel_raw:
             fuel_type = "Diesel"
-        elif "essence" in fuel_raw.lower():
+        elif "essence" in fuel_raw:
             fuel_type = "Essence"
-        elif "hybride" in fuel_raw.lower():
+        elif "hybride" in fuel_raw:
             fuel_type = "Hybride"
-        elif "elect" in fuel_raw.lower() or "élect" in fuel_raw.lower():
+        elif "elect" in fuel_raw or "élect" in fuel_raw:
             fuel_type = "Electrique"
 
-        # Mileage km
-        km_m = re.search(r'fa-road\s+me-1["\']></i>\s*(\d[\d\s,.]*)', block)
+        # 10. Mileage km: Parse digits before 'km' from .fa-road or card text
         mileage_km = None
+        km_m = re.search(r'fa-road[^>]*></i>\s*(\d[\d\s,.]*)', block, re.IGNORECASE)
         if km_m:
             try:
                 mileage_km = float(re.sub(r'[\s,.]', '', km_m.group(1)))
             except ValueError:
                 mileage_km = None
-
-        # Fallbacks in card text
-        card_text = re.sub(r'<[^>]+>', ' ', block)
-        if not year:
-            ym = re.search(r'\b(19[8-9]\d|20[0-2]\d)\b', card_text)
-            if ym:
-                year = int(ym.group(1))
-        if not fuel_type:
-            ct_lower = card_text.lower()
-            if "diesel" in ct_lower:
-                fuel_type = "Diesel"
-            elif "essence" in ct_lower:
-                fuel_type = "Essence"
-            elif "hybride" in ct_lower:
-                fuel_type = "Hybride"
-            elif "electrique" in ct_lower or "électrique" in ct_lower:
-                fuel_type = "Electrique"
-        if not transmission:
-            ct_lower = card_text.lower()
-            if "automatique" in ct_lower or "auto" in ct_lower:
-                transmission = "Automatique"
-            elif "manuelle" in ct_lower or "manuel" in ct_lower:
-                transmission = "Manuelle"
         if mileage_km is None:
-            km_match = re.search(r'(\d[\d\s,.]*)\s*(?:km|kms)\b', card_text, re.I)
+            km_match = re.search(r'(\d[\d\s\xa0]*)\s*(?:km|kms)\b', block, re.IGNORECASE)
             if km_match:
                 try:
-                    mileage_km = float(re.sub(r'[\s,.]', '', km_match.group(1)))
+                    mileage_km = float(re.sub(r'[\s\xa0,.]', '', km_match.group(1)))
                 except ValueError:
-                    pass
+                    mileage_km = None
 
-        # Brand and model resolution
-        brand = ""
-        model = ""
-        if slug:
-            slug_clean = slug.replace(".html", "")
-            parts = slug_clean.split("-")
-            if parts:
-                brand = parts[0].capitalize()
-                model = " ".join(parts[1:]).capitalize()
-        if not brand and title_raw:
-            tokens = title_raw.split()
-            brand = tokens[0].capitalize()
-            model = " ".join(tokens[1:]).capitalize() if len(tokens) > 1 else ""
-
-        # Extract seller phone numbers from tel: links, data-phone, description, and title
+        # 11. Extract seller phone numbers from tel: links, data-phone, description, and title
         seller_phone = None
         tel_m = re.search(r'href=["\']tel:([^"\']+)["\']', block, re.IGNORECASE)
         if tel_m:
@@ -324,23 +341,8 @@ class MoteurScraper(BaseScraper):
             self.sleep()
 
         if len(all_records) == 0:
-            logger.warning(
-                "WARNING: Datacenter IP was challenged by target website. "
-                "Generating fallback batch from historical distribution or saving partial data."
-            )
-            seed_path = self.output_dir / "used_car_training_combined.csv"
-            if seed_path.exists():
-                try:
-                    seed_df = pd.read_csv(seed_path, low_memory=False)
-                    src_match = seed_df[seed_df["source"].astype(str).str.lower() == "moteur"]
-                    fallback_df = src_match.copy() if len(src_match) >= 30 else seed_df.head(150).copy()
-                    fallback_df["source"] = "moteur"
-                    fallback_df["date_scraped"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    logger.info("[%s] Successfully loaded %d verified baseline records from %s", self.source_name, len(fallback_df), seed_path.name)
-                    self.save_output(fallback_df)
-                    return fallback_df
-                except Exception as e:
-                    logger.warning("[%s] Failed to load seed fallback: %s", self.source_name, e)
+            logger.warning("[%s] Crawl complete. 0 records harvested. Writing nothing.", self.source_name)
+            return pd.DataFrame()
 
         df = pd.DataFrame(all_records)
         logger.info("[%s] Crawl complete. Total raw records harvested: %d", self.source_name, len(df))
@@ -350,7 +352,7 @@ class MoteurScraper(BaseScraper):
 
 def main():
     parser = argparse.ArgumentParser(description="Moteur.ma Production Scraper")
-    parser.add_argument("--max-pages", type=int, default=60, help="Max pages to scrape (default: 60)")
+    parser.add_argument("--max-pages", type=int, default=30, help="Max pages to scrape (default: 30)")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
     args = parser.parse_args()
 

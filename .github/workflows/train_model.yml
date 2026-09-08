@@ -46,14 +46,14 @@ jobs:
       - name: Ensure required directories exist
         run: mkdir -p data/raw data/processed models
 
-      - name: Step 1 - Clean & Validate Raw Data (Phase 1)
-        run: python src/clean.py
+      - name: Run Data Cleaning & Verification
+        run: |
+          python src/clean.py
+          python src/features.py
 
-      - name: Step 2 - Feature Engineering & MNAR Imputation (Phase 2)
-        run: python src/features.py
-
-      - name: Step 3 - Chronological Split & CatBoost Training (Phases 3 & 4)
-        run: python src/train.py --device cpu
+      - name: Run Model Training
+        run: |
+          python src/train.py --device cpu
 
       - name: Commit and push trained models and reports
         run: |

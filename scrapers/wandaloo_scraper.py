@@ -273,23 +273,8 @@ class WandalooScraper(BaseScraper):
             self.sleep()
 
         if len(all_records) == 0:
-            logger.warning(
-                "WARNING: Datacenter IP was challenged by target website. "
-                "Generating fallback batch from historical distribution or saving partial data."
-            )
-            seed_path = self.output_dir / "used_car_training_combined.csv"
-            if seed_path.exists():
-                try:
-                    seed_df = pd.read_csv(seed_path, low_memory=False)
-                    src_match = seed_df[seed_df["source"].astype(str).str.lower() == "wandaloo"]
-                    fallback_df = src_match.copy() if len(src_match) >= 30 else seed_df.head(150).copy()
-                    fallback_df["source"] = "wandaloo"
-                    fallback_df["date_scraped"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    logger.info("[%s] Fallback loaded %d verified baseline records from %s", self.source_name, len(fallback_df), seed_path.name)
-                    self.save_output(fallback_df)
-                    return fallback_df
-                except Exception as e:
-                    logger.warning("[%s] Failed to load seed fallback: %s", self.source_name, e)
+            logger.warning("[%s] Crawl complete. 0 records harvested. Writing nothing.", self.source_name)
+            return pd.DataFrame()
 
         df = pd.DataFrame(all_records)
         logger.info("[%s] Crawl complete. Total records: %d", self.source_name, len(df))
