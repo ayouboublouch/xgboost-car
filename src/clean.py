@@ -221,24 +221,39 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
-    """Scan and merge all raw parquet and csv datasets in data/raw."""
+    """Scan and merge all raw parquet and csv datasets in data/raw, guaranteeing seed dataset inclusion."""
     frames = []
+
+    # Guarantee inclusion of the verified baseline seed dataset (656 records)
+    seed_file = raw_dir / "used_car_training_combined.csv"
+    if seed_file.exists():
+        try:
+            df_seed = pd.read_csv(seed_file, low_memory=False)
+            if not df_seed.empty:
+                logger.info("Loaded %d verified baseline records from %s", len(df_seed), seed_file.name)
+                frames.append(df_seed)
+        except Exception as e:
+            logger.warning("Could not load baseline seed file %s: %s", seed_file.name, e)
 
     parquet_files = sorted(list(raw_dir.glob("*.parquet")))
     for pf in parquet_files:
         try:
             df_p = pd.read_parquet(pf)
-            logger.info("Loaded %d rows from %s", len(df_p), pf.name)
-            frames.append(df_p)
+            if not df_p.empty:
+                logger.info("Loaded %d rows from %s", len(df_p), pf.name)
+                frames.append(df_p)
         except Exception as e:
             logger.warning("Could not read %s: %s", pf.name, e)
 
     csv_files = sorted(list(raw_dir.glob("*.csv")))
     for cf in csv_files:
+        if cf.name == "used_car_training_combined.csv":
+            continue
         try:
             df_c = pd.read_csv(cf, low_memory=False)
-            logger.info("Loaded %d rows from %s", len(df_c), cf.name)
-            frames.append(df_c)
+            if not df_c.empty:
+                logger.info("Loaded %d rows from %s", len(df_c), cf.name)
+                frames.append(df_c)
         except Exception as e:
             logger.warning("Could not read %s: %s", cf.name, e)
 
@@ -335,11 +350,13 @@ def main():
     out_parquet = output_dir / "cleaned_cars.parquet"
     out_csv = output_dir / "cleaned_cars.csv"
 
-    df_cleaned.to_parquet(out_parquet, index=False, engine="pyarrow")
-    df_cleaned.to_csv(out_csv, index=False, encoding="utf-8")
+    try:
+        df_cleaned.to_parquet(out_parquet, index=False, engine="pyarrow")
+        logger.info("  -> Parquet: %s (%d rows)", out_parquet, len(df_cleaned))
+    except Exception as e:
+        logger.warning("Could not save parquet format (pyarrow missing): %s", e)
 
-    logger.info("Cleaned dataset successfully saved:")
-    logger.info("  -> Parquet: %s (%d rows)", out_parquet, len(df_cleaned))
+    df_cleaned.to_csv(out_csv, index=False, encoding="utf-8")
     logger.info("  -> CSV:     %s (%d rows)", out_csv, len(df_cleaned))
 
 

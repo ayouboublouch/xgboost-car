@@ -223,7 +223,21 @@ def main():
         if csv_path.exists():
             input_path = csv_path
         else:
-            raise FileNotFoundError(f"Feature dataset not found at {input_path}")
+            logger.info("Feature dataset not found at %s. Triggering automatic clean & features pipeline from data/raw/used_car_training_combined.csv...", input_path)
+            try:
+                from src.clean import load_raw_datasets, clean_dataframe
+                from src.features import engineer_features
+            except ImportError:
+                from clean import load_raw_datasets, clean_dataframe
+                from features import engineer_features
+            raw_dir = Path("data/raw")
+            df_raw = load_raw_datasets(raw_dir)
+            df_cleaned = clean_dataframe(df_raw)
+            df_features = engineer_features(df_cleaned)
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            df_features.to_parquet(input_path, index=False, engine="pyarrow")
+            df_features.to_csv(csv_path, index=False, encoding="utf-8")
+            logger.info("Generated %d baseline feature rows from verified seed dataset.", len(df_features))
 
     logger.info("Loading feature dataset from %s ...", input_path)
     if input_path.suffix == ".parquet":

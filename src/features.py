@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -183,11 +183,13 @@ def main():
     out_parquet = output_dir / "features_cars.parquet"
     out_csv = output_dir / "features_cars.csv"
 
-    df_featured.to_parquet(out_parquet, index=False, engine="pyarrow")
-    df_featured.to_csv(out_csv, index=False, encoding="utf-8")
+    try:
+        df_featured.to_parquet(out_parquet, index=False, engine="pyarrow")
+        logger.info("  -> Parquet: %s (%d rows)", out_parquet, len(df_featured))
+    except Exception as e:
+        logger.warning("Could not save parquet format (pyarrow missing): %s", e)
 
-    logger.info("Feature dataset successfully saved:")
-    logger.info("  -> Parquet: %s (%d rows)", out_parquet, len(df_featured))
+    df_featured.to_csv(out_csv, index=False, encoding="utf-8")
     logger.info("  -> CSV:     %s (%d rows)", out_csv, len(df_featured))
 
 
