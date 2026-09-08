@@ -29,9 +29,9 @@ if str(SCRAPERS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRAPERS_DIR))
 
 try:
-    from scrapers.base import BaseScraper, SCHEMA_FIELDS
+    from scrapers.base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
 except ImportError:
-    from base import BaseScraper, SCHEMA_FIELDS
+    from base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
 
 try:
     from bs4 import BeautifulSoup
@@ -197,6 +197,28 @@ class MoteurScraper(BaseScraper):
             brand = tokens[0].capitalize()
             model = " ".join(tokens[1:]).capitalize() if len(tokens) > 1 else ""
 
+        # Extract seller phone numbers from tel: links, data-phone, description, and title
+        seller_phone = None
+        tel_m = re.search(r'href=["\']tel:([^"\']+)["\']', block, re.IGNORECASE)
+        if tel_m:
+            seller_phone = extract_moroccan_phone(tel_m.group(1))
+
+        if not seller_phone:
+            dp_m = re.search(r'data-phone=["\']([^"\']+)["\']', block, re.IGNORECASE)
+            if dp_m:
+                seller_phone = extract_moroccan_phone(dp_m.group(1))
+
+        if not seller_phone and description_raw:
+            seller_phone = extract_moroccan_phone(description_raw)
+
+        if not seller_phone and title_raw:
+            seller_phone = extract_moroccan_phone(title_raw)
+
+        if not seller_phone:
+            seller_phone = extract_moroccan_phone(block)
+
+        seller_phone_hash = hash_phone(seller_phone)
+
         raw_record = {
             "listing_id": listing_id,
             "url": full_url,
@@ -217,6 +239,8 @@ class MoteurScraper(BaseScraper):
             "owners_count": "",
             "doors_count": None,
             "seller_type": "Particulier",
+            "seller_phone": seller_phone,
+            "seller_phone_hash": seller_phone_hash,
             "city": city,
             "region": "",
             "price_mad": price_mad,

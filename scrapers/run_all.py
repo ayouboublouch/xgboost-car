@@ -32,9 +32,9 @@ if str(SCRAPERS_DIR) not in sys.path:
 import pandas as pd
 
 try:
-    from scrapers.base import BaseScraper, SCHEMA_FIELDS
+    from scrapers.base import BaseScraper, SCHEMA_FIELDS, consolidate_daily_scrapes, purge_empty_raw_files
 except ImportError:
-    from base import BaseScraper, SCHEMA_FIELDS
+    from base import BaseScraper, SCHEMA_FIELDS, consolidate_daily_scrapes, purge_empty_raw_files
 
 def get_scraper_class(source: str) -> Type[BaseScraper]:
     """Lazy loader for scrapers to ensure smooth CLI operation and resilience."""
@@ -178,6 +178,10 @@ def run():
         total += count
     logger.info("Total harvested across all sources: %d records", total)
     logger.info("==========================================================")
+
+    # Purge empty/dummy files and consolidate daily output into a single file
+    purge_empty_raw_files(output_path)
+    consolidate_daily_scrapes(output_path)
 
 
 if __name__ == "__main__":

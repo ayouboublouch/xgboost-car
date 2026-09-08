@@ -28,9 +28,9 @@ if str(SCRAPERS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRAPERS_DIR))
 
 try:
-    from scrapers.base import BaseScraper, SCHEMA_FIELDS
+    from scrapers.base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
 except ImportError:
-    from base import BaseScraper, SCHEMA_FIELDS
+    from base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
 
 try:
     from bs4 import BeautifulSoup
@@ -152,9 +152,37 @@ class WandalooScraper(BaseScraper):
         date_posted = date_scraped[:10]
 
         # Brand / Model tokens
-        tokens = title_raw.split()
-        brand = tokens[0].capitalize() if tokens else ""
-        model = " ".join(tokens[1:]).capitalize() if len(tokens) > 1 else ""
+        # Extract description if present
+        desc_m = re.search(r'class=["\'][^"\']*(?:desc|detail-txt|texte)[^"\']*["\'][^>]*>(.*?)</(?:p|div)>', block, re.DOTALL | re.IGNORECASE)
+        description_raw = desc_m.group(1).strip() if desc_m else ""
+        description_raw = re.sub(r'<[^>]+>', '', description_raw).strip()
+
+        # Extract seller phone numbers from contact container, telephone buttons, description, and block
+        seller_phone = None
+        tel_m = re.search(r'href=["\']tel:([^"\']+)["\']', block, re.IGNORECASE)
+        if tel_m:
+            seller_phone = extract_moroccan_phone(tel_m.group(1))
+
+        if not seller_phone:
+            dp_m = re.search(r'data-phone=["\']([^"\']+)["\']', block, re.IGNORECASE)
+            if dp_m:
+                seller_phone = extract_moroccan_phone(dp_m.group(1))
+
+        if not seller_phone:
+            contact_m = re.search(r'class=["\'][^"\']*(?:phone|tel|contact)[^"\']*["\'][^>]*>(.*?)</', block, re.DOTALL | re.IGNORECASE)
+            if contact_m:
+                seller_phone = extract_moroccan_phone(contact_m.group(1))
+
+        if not seller_phone and description_raw:
+            seller_phone = extract_moroccan_phone(description_raw)
+
+        if not seller_phone and title_raw:
+            seller_phone = extract_moroccan_phone(title_raw)
+
+        if not seller_phone:
+            seller_phone = extract_moroccan_phone(block)
+
+        seller_phone_hash = hash_phone(seller_phone)
 
         raw_record = {
             "listing_id": listing_id,
@@ -176,11 +204,13 @@ class WandalooScraper(BaseScraper):
             "owners_count": "",
             "doors_count": None,
             "seller_type": "Particulier",
+            "seller_phone": seller_phone,
+            "seller_phone_hash": seller_phone_hash,
             "city": city,
             "region": "",
             "price_mad": price_mad,
             "photos_count": 1.0,
-            "description_raw": "",
+            "description_raw": description_raw,
         }
         return self.validate_and_format_record(raw_record)
 

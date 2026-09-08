@@ -33,6 +33,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger("clean")
 
+# Add project root to sys.path
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from scrapers.base import (
+        extract_moroccan_phone,
+        hash_phone,
+        purge_empty_raw_files,
+        consolidate_daily_scrapes,
+    )
+except ImportError:
+    def extract_moroccan_phone(text: Any) -> Optional[str]:
+        if text is None or pd.isna(text):
+            return None
+        s = str(text)
+        pattern = r"(?:(?:\+|00)212|0)\s*[5-7](?:[\s\.-]*\d{2}){4}"
+        m = re.search(pattern, s)
+        if not m:
+            return None
+        digits = re.sub(r"[\s\.\-]+", "", m.group(0))
+        if digits.startswith("+212"):
+            digits = "0" + digits[4:]
+        elif digits.startswith("00212"):
+            digits = "0" + digits[5:]
+        return digits if len(digits) == 10 and digits[0] == "0" and digits[1] in "567" else None
+
+    def hash_phone(phone: Optional[str]) -> Optional[str]:
+        if not phone or not isinstance(phone, str) or str(phone).strip() == "" or str(phone).lower() == "nan":
+            return None
+        return hashlib.sha256(phone.strip().encode("utf-8")).hexdigest()
+
+    def purge_empty_raw_files(raw_dir: Path) -> List[str]:
+        return []
+
+    def consolidate_daily_scrapes(raw_dir: Path, target_date: Optional[str] = None) -> Optional[Path]:
+        return None
+
 
 class UnionFind:
     """Disjoint Set Union (Union-Find) with path compression."""
@@ -73,7 +112,7 @@ def parse_fiscal_power(val: Any) -> Tuple[float, int]:
 
 
 def generate_repost_group_id(row: pd.Series) -> str:
-    """Generate or preserve repost_group_id."""
+    """Generate or preserve repost_group_id, leveraging seller_phone_hash when present."""
     existing = row.get("repost_group_id")
     if pd.notna(existing) and str(existing).strip() != "" and str(existing).lower() != "nan":
         return str(existing)
@@ -83,6 +122,7 @@ def generate_repost_group_id(row: pd.Series) -> str:
     year = str(row.get("year", ""))
     fuel = str(row.get("fuel_type", "")).lower().strip()
     city = str(row.get("city", "")).lower().strip()
+    phone_hash = str(row.get("seller_phone_hash", "")).strip()
 
     mileage = row.get("mileage_km")
     km_bucket = "unknown"
@@ -92,7 +132,11 @@ def generate_repost_group_id(row: pd.Series) -> str:
         except (ValueError, TypeError):
             pass
 
-    key = f"{brand}|{model}|{year}|{fuel}|{city}|{km_bucket}"
+    # If seller phone hash exists, link listings by same seller for this vehicle
+    if phone_hash and phone_hash.lower() != "nan":
+        key = f"{phone_hash}|{brand}|{model}|{year}"
+    else:
+        key = f"{brand}|{model}|{year}|{fuel}|{city}|{km_bucket}"
     return "repost_" + hashlib.md5(key.encode("utf-8")).hexdigest()[:10]
 
 
@@ -222,7 +266,12 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
     """Scan and merge all raw parquet and csv datasets in data/raw, guaranteeing seed dataset inclusion."""
+    # First purge empty/dummy files and consolidate any daily batches
+    purge_empty_raw_files(raw_dir)
+    consolidate_daily_scrapes(raw_dir)
+
     frames = []
+    loaded_stems = set()
 
     # Guarantee inclusion of the verified baseline seed dataset (656 records)
     seed_file = raw_dir / "used_car_training_combined.csv"
@@ -232,6 +281,7 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
             if not df_seed.empty:
                 logger.info("Loaded %d verified baseline records from %s", len(df_seed), seed_file.name)
                 frames.append(df_seed)
+                loaded_stems.add(seed_file.stem)
         except Exception as e:
             logger.warning("Could not load baseline seed file %s: %s", seed_file.name, e)
 
@@ -242,12 +292,13 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
             if not df_p.empty:
                 logger.info("Loaded %d rows from %s", len(df_p), pf.name)
                 frames.append(df_p)
+                loaded_stems.add(pf.stem)
         except Exception as e:
             logger.warning("Could not read %s: %s", pf.name, e)
 
     csv_files = sorted(list(raw_dir.glob("*.csv")))
     for cf in csv_files:
-        if cf.name == "used_car_training_combined.csv":
+        if cf.name == "used_car_training_combined.csv" or cf.stem in loaded_stems:
             continue
         try:
             df_c = pd.read_csv(cf, low_memory=False)
@@ -279,6 +330,46 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         df = df.drop_duplicates(subset=["url"], keep="last")
 
     logger.info("Rows after within-source deduplication: %d", len(df))
+
+    # Backfill / Harmonize seller phone numbers and privacy hashes
+    if "seller_phone" not in df.columns:
+        df["seller_phone"] = None
+    if "seller_phone_hash" not in df.columns:
+        df["seller_phone_hash"] = None
+
+    def resolve_seller_phone(row):
+        p = row.get("seller_phone")
+        if pd.notna(p) and str(p).strip() != "" and str(p).lower() != "nan":
+            norm = extract_moroccan_phone(p)
+            if norm:
+                return norm
+        desc = row.get("description_raw")
+        if pd.notna(desc) and str(desc).strip() != "":
+            norm = extract_moroccan_phone(desc)
+            if norm:
+                return norm
+        title = row.get("title_raw")
+        if pd.notna(title) and str(title).strip() != "":
+            norm = extract_moroccan_phone(title)
+            if norm:
+                return norm
+        return None
+
+    df["seller_phone"] = df.apply(resolve_seller_phone, axis=1)
+
+    def resolve_seller_phone_hash(row):
+        h = row.get("seller_phone_hash")
+        if pd.notna(h) and str(h).strip() != "" and str(h).lower() != "nan":
+            return str(h).strip()
+        p = row.get("seller_phone")
+        if pd.notna(p) and str(p).strip() != "":
+            return hash_phone(str(p).strip())
+        return None
+
+    df["seller_phone_hash"] = df.apply(resolve_seller_phone_hash, axis=1)
+    n_phones = df["seller_phone"].notna().sum()
+    n_hashes = df["seller_phone_hash"].notna().sum()
+    logger.info("Seller phone coverage: %d raw numbers extracted, %d hashes populated", n_phones, n_hashes)
 
     # Clean numeric fields
     for col in ["price_mad", "year", "mileage_km", "doors_count", "photos_count"]:

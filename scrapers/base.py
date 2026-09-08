@@ -11,6 +11,7 @@ Enforces:
 
 import abc
 import datetime
+import hashlib
 import logging
 import random
 import re
@@ -40,7 +41,7 @@ import pandas as pd
 
 logger = logging.getLogger("scraper.base")
 
-# Target schema mandated by Autohouse.ma Cahier des Charges (24 standardized fields)
+# Target schema mandated by Autohouse.ma Cahier des Charges (standardized fields + phone & privacy hash)
 SCHEMA_FIELDS = [
     "listing_id",
     "url",
@@ -61,12 +62,49 @@ SCHEMA_FIELDS = [
     "owners_count",
     "doors_count",
     "seller_type",
+    "seller_phone",
+    "seller_phone_hash",
     "city",
     "region",
     "price_mad",
     "photos_count",
     "description_raw",
 ]
+
+
+def extract_moroccan_phone(text: Any) -> Optional[str]:
+    r"""
+    Extract and normalize Moroccan customer/seller phone numbers.
+    Pattern matches mobile and landline numbers (05, 06, 07):
+    Regex: r'(?:(?:\+|00)212|0)\s*[5-7](?:[\s\.-]*\d{2}){4}'
+    Normalizes to 10-digit format (e.g., '+212612345678' -> '0612345678').
+    """
+    if text is None or pd.isna(text):
+        return None
+    s = str(text)
+    pattern = r"(?:(?:\+|00)212|0)\s*[5-7](?:[\s\.-]*\d{2}){4}"
+    match = re.search(pattern, s)
+    if not match:
+        return None
+
+    raw_phone = match.group(0)
+    # Remove all formatting characters (spaces, dots, hyphens)
+    digits = re.sub(r"[\s\.\-]+", "", raw_phone)
+    if digits.startswith("+212"):
+        digits = "0" + digits[4:]
+    elif digits.startswith("00212"):
+        digits = "0" + digits[5:]
+
+    if len(digits) == 10 and digits.startswith("0") and digits[1] in "567":
+        return digits
+    return None
+
+
+def hash_phone(phone: Optional[str]) -> Optional[str]:
+    """Compute SHA-256 hash of normalized phone number for privacy-compliant repost deduplication."""
+    if not phone or not isinstance(phone, str) or str(phone).strip() == "" or str(phone).lower() == "nan":
+        return None
+    return hashlib.sha256(phone.strip().encode("utf-8")).hexdigest()
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -253,6 +291,23 @@ class BaseScraper(abc.ABC):
 
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # Extract and normalize Moroccan customer/seller phone
+        seller_phone = None
+        raw_phone = raw_record.get("seller_phone")
+        if raw_phone:
+            seller_phone = extract_moroccan_phone(raw_phone)
+        if not seller_phone and raw_record.get("description_raw"):
+            seller_phone = extract_moroccan_phone(raw_record.get("description_raw"))
+        if not seller_phone and raw_record.get("title_raw"):
+            seller_phone = extract_moroccan_phone(raw_record.get("title_raw"))
+
+        # Compute or preserve SHA-256 hash of phone
+        seller_phone_hash = raw_record.get("seller_phone_hash")
+        if not seller_phone_hash or pd.isna(seller_phone_hash) or str(seller_phone_hash).strip() == "" or str(seller_phone_hash).lower() == "nan":
+            seller_phone_hash = hash_phone(seller_phone)
+        else:
+            seller_phone_hash = str(seller_phone_hash).strip()
+
         # Standardize record
         record: Dict[str, Any] = {
             "listing_id": listing_id,
@@ -274,6 +329,8 @@ class BaseScraper(abc.ABC):
             "owners_count": str(raw_record.get("owners_count") or "").strip(),
             "doors_count": self.clean_numeric(raw_record.get("doors_count")),
             "seller_type": str(raw_record.get("seller_type") or "Particulier").strip(),
+            "seller_phone": seller_phone,
+            "seller_phone_hash": seller_phone_hash,
             "city": str(raw_record.get("city") or "").strip(),
             "region": str(raw_record.get("region") or "").strip(),
             "price_mad": self.clean_numeric(raw_record.get("price_mad")),
@@ -332,3 +389,165 @@ class BaseScraper(abc.ABC):
             logger.info("[%s] Saved %d records to %s", self.source_name, len(df), csv_path)
         except Exception as e:
             logger.error("[%s] Failed to save CSV: %s", self.source_name, e)
+
+        # Trigger automatic consolidation of daily batches and purge empty files
+        consolidate_daily_scrapes(self.output_dir, today_str)
+
+
+def purge_empty_raw_files(raw_dir: Path) -> List[str]:
+    """
+    Scan all existing CSV and Parquet files in data/raw/.
+    Delete any file with a size <= 500 bytes or containing only headers (e.g. avito_2026-09-07.csv).
+    Also delete Parquet files containing 0 rows.
+    Safeguards: Never delete used_car_training_combined.csv.
+    """
+    purged: List[str] = []
+    raw_dir = Path(raw_dir)
+    if not raw_dir.exists():
+        return purged
+
+    for file_path in raw_dir.iterdir():
+        if not file_path.is_file():
+            continue
+        if file_path.name == "used_car_training_combined.csv":
+            continue
+
+        should_delete = False
+        if file_path.suffix == ".csv":
+            size = file_path.stat().st_size
+            if size <= 500:
+                should_delete = True
+            else:
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = [line.strip() for line in f if line.strip()]
+                    if len(lines) <= 1:
+                        should_delete = True
+                except Exception:
+                    pass
+        elif file_path.suffix == ".parquet":
+            try:
+                df_p = pd.read_parquet(file_path)
+                if len(df_p) == 0:
+                    should_delete = True
+            except Exception:
+                if file_path.stat().st_size <= 500:
+                    should_delete = True
+
+        if should_delete:
+            try:
+                file_path.unlink()
+                purged.append(file_path.name)
+                logger.info("Purged empty / header-only file: %s", file_path.name)
+            except Exception as e:
+                logger.warning("Could not delete %s: %s", file_path.name, e)
+
+    return purged
+
+
+def consolidate_daily_scrapes(
+    raw_dir: Path, target_date: Optional[str] = None
+) -> Optional[Path]:
+    """
+    Find all scraped batches generated for target_date across sources (Avito, Moteur, Wandaloo, etc.).
+    Concatenate them into a single standardized file: data/raw/scraped_combined_YYYY-MM-DD.csv.
+    Ensure deduplication on (listing_id, url) while merging.
+    Remove individual small/partial temporary batch files for that day once consolidated.
+    """
+    raw_dir = Path(raw_dir)
+    if not raw_dir.exists():
+        return None
+
+    # First purge empty/dummy files
+    purge_empty_raw_files(raw_dir)
+
+    # Determine dates to consolidate if target_date is not specified
+    dates_to_process = set()
+    if target_date:
+        dates_to_process.add(target_date)
+    else:
+        # Detect all dates present in format {source}_{YYYY-MM-DD}.csv
+        for f in raw_dir.glob("*_*.csv"):
+            if f.name.startswith("scraped_combined_") or f.name == "used_car_training_combined.csv":
+                continue
+            m = re.search(r"_(\d{4}-\d{2}-\d{2})\.csv$", f.name)
+            if m:
+                dates_to_process.add(m.group(1))
+
+    consolidated_files = []
+
+    for d in sorted(list(dates_to_process)):
+        pattern = f"*_{d}.csv"
+        matching_csvs = [
+            f
+            for f in raw_dir.glob(pattern)
+            if not f.name.startswith("scraped_combined_") and f.name != "used_car_training_combined.csv"
+        ]
+        if not matching_csvs:
+            continue
+
+        frames = []
+        files_to_remove = []
+
+        for f in matching_csvs:
+            try:
+                df = pd.read_csv(f, low_memory=False)
+                if not df.empty and len(df) > 0:
+                    frames.append(df)
+                    files_to_remove.append(f)
+                    pq = f.with_suffix(".parquet")
+                    if pq.exists():
+                        files_to_remove.append(pq)
+            except Exception as e:
+                logger.warning("Could not read batch file %s: %s", f.name, e)
+
+        if not frames:
+            continue
+
+        merged_df = pd.concat(frames, ignore_index=True)
+
+        # Deduplicate on (listing_id, url) if available
+        dedup_cols = []
+        for c in ["listing_id", "url"]:
+            if c in merged_df.columns:
+                dedup_cols.append(c)
+
+        if dedup_cols:
+            merged_df = merged_df.drop_duplicates(subset=dedup_cols, keep="last")
+        else:
+            merged_df = merged_df.drop_duplicates()
+
+        # Enforce SCHEMA_FIELDS order
+        for col in SCHEMA_FIELDS:
+            if col not in merged_df.columns:
+                merged_df[col] = None
+        merged_df = merged_df[SCHEMA_FIELDS]
+
+        out_csv = raw_dir / f"scraped_combined_{d}.csv"
+        out_parquet = raw_dir / f"scraped_combined_{d}.parquet"
+
+        merged_df.to_csv(out_csv, index=False, encoding="utf-8")
+        try:
+            merged_df.to_parquet(out_parquet, index=False, engine="pyarrow")
+        except Exception:
+            pass
+
+        logger.info(
+            "Consolidated %d batches for %s into %s (%d records)",
+            len(frames),
+            d,
+            out_csv.name,
+            len(merged_df),
+        )
+        consolidated_files.append(out_csv)
+
+        # Clean up partial temporary batch files for that day
+        for tmp_f in files_to_remove:
+            try:
+                if tmp_f.exists() and tmp_f.resolve() != out_csv.resolve() and tmp_f.resolve() != out_parquet.resolve():
+                    tmp_f.unlink()
+                    logger.info("Removed temporary batch file: %s", tmp_f.name)
+            except Exception as e:
+                logger.warning("Failed to remove temporary file %s: %s", tmp_f.name, e)
+
+    return consolidated_files[0] if consolidated_files else None

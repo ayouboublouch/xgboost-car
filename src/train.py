@@ -20,7 +20,11 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
+
+# Guarantee required directories exist at script initialization
+os.makedirs("models", exist_ok=True)
+os.makedirs("data/processed", exist_ok=True)
 
 import numpy as np
 import pandas as pd
@@ -142,7 +146,7 @@ def evaluate_predictions(y_true: pd.Series, y_pred: np.ndarray, model_name: str)
     within_15 = float((abs_rel_err <= 0.15).mean() * 100)
 
     logger.info(
-        "[%-20s] MAE: %10,.0f MAD | MAPE: %5.1f%% | R2: %5.3f | +-10%%: %4.1f%% | +-15%%: %4.1f%%",
+        "[%-20s] MAE: %10.0f MAD | MAPE: %5.1f%% | R2: %5.3f | +-10%%: %4.1f%% | +-15%%: %4.1f%%",
         model_name,
         mae,
         mape,
@@ -211,6 +215,13 @@ def main():
         type=str,
         default="models",
         help="Directory to save trained models and reports",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["cpu", "cuda", "gpu", "auto"],
+        help="Device to use for model training (default: auto)",
     )
     args = parser.parse_args()
 
@@ -340,16 +351,47 @@ def main():
     val_pool = Pool(X_val_cb, y_val, cat_features=cat_indices)
     test_pool = Pool(X_test_cb, cat_features=cat_indices)
 
-    cb_model = CatBoostRegressor(
-        iterations=1000,
-        learning_rate=0.05,
-        depth=6,
-        loss_function="MAE",
-        eval_metric="MAE",
-        random_seed=42,
-        verbose=100,
-        early_stopping_rounds=50,
-    )
+    # Environment and device detection
+    is_ci = bool(os.environ.get("CI"))
+    force_cpu = (args.device.lower() == "cpu") or is_ci
+
+    cb_task_type = "CPU"
+    cb_thread_count = 2
+
+    if not force_cpu and args.device.lower() in ("cuda", "gpu"):
+        try:
+            # Check GPU availability for CatBoost
+            test_cb = CatBoostRegressor(iterations=1, task_type="GPU", verbose=0)
+            test_cb.fit(np.array([[1.0]]), np.array([1.0]))
+            cb_task_type = "GPU"
+            cb_thread_count = None
+            logger.info("CatBoost GPU acceleration enabled.")
+        except Exception as e:
+            logger.warning("GPU acceleration unavailable (%s); falling back to CPU.", e)
+            cb_task_type = "CPU"
+            cb_thread_count = 2
+    else:
+        logger.info(
+            "Configuring CatBoost for task_type=%s, thread_count=%s (CI / CPU memory safety).",
+            cb_task_type,
+            cb_thread_count,
+        )
+
+    cb_kwargs: Dict[str, Any] = {
+        "iterations": 1000,
+        "learning_rate": 0.05,
+        "depth": 6,
+        "loss_function": "MAE",
+        "eval_metric": "MAE",
+        "random_seed": 42,
+        "verbose": 100,
+        "early_stopping_rounds": 50,
+        "task_type": cb_task_type,
+    }
+    if cb_thread_count is not None:
+        cb_kwargs["thread_count"] = cb_thread_count
+
+    cb_model = CatBoostRegressor(**cb_kwargs)
 
     cb_model.fit(train_pool, eval_set=val_pool, use_best_model=True)
     pred_cb = cb_model.predict(test_pool)

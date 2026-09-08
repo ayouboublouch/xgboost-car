@@ -27,9 +27,9 @@ except ImportError:
 import pandas as pd
 
 try:
-    from scrapers.base import BaseScraper, SCHEMA_FIELDS
+    from scrapers.base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
 except ImportError:
-    from base import BaseScraper, SCHEMA_FIELDS
+    from base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
 
 logging.basicConfig(
     level=logging.INFO,
@@ -153,6 +153,29 @@ class AvitoScraper(BaseScraper):
         owners_count = params.get("first_owner") or params.get("nombre_de_mains") or params.get("owners_count") or ""
         doors_count = params.get("doors") or params.get("nombre_de_portes") or params.get("doors_count")
 
+        # Extract seller phone numbers from user info, contact objects, params, description, and title
+        seller_phone = None
+        if isinstance(user_info, dict):
+            seller_phone = extract_moroccan_phone(
+                user_info.get("phone") or user_info.get("phoneNumber") or user_info.get("contactPhone")
+            )
+        if not seller_phone:
+            contact_info = ad.get("contact") or ad.get("seller") or {}
+            if isinstance(contact_info, dict):
+                seller_phone = extract_moroccan_phone(
+                    contact_info.get("phone") or contact_info.get("phoneNumber")
+                )
+        if not seller_phone:
+            seller_phone = extract_moroccan_phone(ad.get("phone") or ad.get("phoneNumber"))
+        if not seller_phone:
+            seller_phone = extract_moroccan_phone(params.get("phone") or params.get("telephone"))
+        if not seller_phone and description_raw:
+            seller_phone = extract_moroccan_phone(description_raw)
+        if not seller_phone and title_raw:
+            seller_phone = extract_moroccan_phone(title_raw)
+
+        seller_phone_hash = hash_phone(seller_phone)
+
         raw_dict = {
             "listing_id": listing_id,
             "url": url,
@@ -173,6 +196,8 @@ class AvitoScraper(BaseScraper):
             "owners_count": owners_count,
             "doors_count": doors_count,
             "seller_type": seller_type,
+            "seller_phone": seller_phone,
+            "seller_phone_hash": seller_phone_hash,
             "city": city,
             "region": region,
             "price_mad": price_val,
@@ -232,6 +257,20 @@ class AvitoScraper(BaseScraper):
             elif "manuelle" in card_txt:
                 transmission = "Manuelle"
 
+            # Check DOM for phone number
+            seller_phone = None
+            tel_link = card.find("a", href=re.compile(r"^tel:", re.IGNORECASE))
+            if tel_link:
+                seller_phone = extract_moroccan_phone(tel_link.get("href"))
+            if not seller_phone:
+                phone_btn = card.find(attrs={"data-phone": True})
+                if phone_btn:
+                    seller_phone = extract_moroccan_phone(phone_btn.get("data-phone"))
+            if not seller_phone:
+                seller_phone = extract_moroccan_phone(card.get_text())
+
+            seller_phone_hash = hash_phone(seller_phone)
+
             record = {
                 "listing_id": listing_id,
                 "url": full_url,
@@ -252,6 +291,8 @@ class AvitoScraper(BaseScraper):
                 "owners_count": "",
                 "doors_count": None,
                 "seller_type": "Particulier",
+                "seller_phone": seller_phone,
+                "seller_phone_hash": seller_phone_hash,
                 "city": "",
                 "region": "",
                 "price_mad": price_mad,

@@ -28,6 +28,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgomp1 build-essential
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -40,6 +43,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Ensure required directories exist
+        run: mkdir -p data/raw data/processed models
+
       - name: Step 1 - Clean & Validate Raw Data (Phase 1)
         run: python src/clean.py
 
@@ -47,21 +53,17 @@ jobs:
         run: python src/features.py
 
       - name: Step 3 - Chronological Split & CatBoost Training (Phases 3 & 4)
-        run: python src/train.py
+        run: python src/train.py --device cpu
 
       - name: Commit and push trained models and reports
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Stage updated model and processed data
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add models/ data/processed/
-
-          if git diff --staged --quiet; then
-            echo "No model or artifact updates to commit."
-          else
-            git commit -m "Automated MLOps: update CatBoost model and evaluation metrics [skip ci]"
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(ml): update trained CatBoost model and benchmarks [skip ci]"
             git pull --rebase origin main
             git push origin main
-            echo "Successfully deployed new model artifacts to repository."
+          else
+            echo "No changes in models or processed data to commit."
           fi

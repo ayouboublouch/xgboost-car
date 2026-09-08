@@ -21,3 +21,6 @@ ehthumbs.db
 # IDEs
 .vscode/
 .idea/
+
+# CatBoost training logs
+catboost_info/
