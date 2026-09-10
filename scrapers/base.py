@@ -372,9 +372,6 @@ class BaseScraper(abc.ABC):
         except Exception as e:
             logger.error("[%s] Failed to save CSV: %s", self.source_name, e)
 
-        # Trigger automatic consolidation of daily batches and purge empty files
-        consolidate_daily_scrapes(self.output_dir, today_str)
-
 
 def purge_empty_raw_files(raw_dir: Path) -> List[str]:
     """
@@ -471,6 +468,18 @@ def consolidate_daily_scrapes(
         frames = []
         files_to_remove = []
 
+        out_csv = raw_dir / f"scraped_combined_{d}.csv"
+        out_parquet = raw_dir / f"scraped_combined_{d}.parquet"
+
+        # If a combined file already exists for date d, load it first to merge & deduplicate
+        if out_csv.exists():
+            try:
+                existing_df = pd.read_csv(out_csv, low_memory=False)
+                if not existing_df.empty and len(existing_df) > 0:
+                    frames.append(existing_df)
+            except Exception as e:
+                logger.warning("Could not read existing combined file %s: %s", out_csv.name, e)
+
         for f in matching_csvs:
             try:
                 df = pd.read_csv(f, low_memory=False)
@@ -505,8 +514,6 @@ def consolidate_daily_scrapes(
                 merged_df[col] = None
         merged_df = merged_df[SCHEMA_FIELDS]
 
-        out_csv = raw_dir / f"scraped_combined_{d}.csv"
-        out_parquet = raw_dir / f"scraped_combined_{d}.parquet"
 
         merged_df.to_csv(out_csv, index=False, encoding="utf-8")
         try:

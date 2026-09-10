@@ -2,10 +2,6 @@ name: Train & Evaluate Price Model
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Scheduled Avito Scraper", "Parallel Multi-Source Car Scraper"]
-    types:
-      - completed
   push:
     branches:
       - main
@@ -18,9 +14,8 @@ permissions:
 
 jobs:
   train-model:
-    # Only run if workflow_run succeeded or if triggered by push/manual dispatch
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository

@@ -92,8 +92,8 @@ def run():
         "--source",
         type=str,
         default="moteur",
-        choices=["moteur", "wandaloo", "avito", "kifal", "siaracash", "all"],
-        help="Target platform to scrape (default: moteur)",
+        choices=["moteur", "wandaloo", "avito", "kifal", "siaracash", "all", "none"],
+        help="Target platform to scrape (default: moteur, use none to skip scraping)",
     )
     parser.add_argument(
         "--max-pages",
@@ -113,12 +113,23 @@ def run():
         default="data/raw",
         help="Directory to save raw Parquet & CSV files (default: data/raw)",
     )
+    parser.add_argument(
+        "--consolidate",
+        action="store_true",
+        default=False,
+        help="Consolidate daily scrapes into scraped_combined_YYYY-MM-DD.csv",
+    )
     args = parser.parse_args()
 
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    targets = AVAILABLE_SOURCES if args.source == "all" else [args.source]
+    if args.source == "none":
+        targets = []
+    elif args.source == "all":
+        targets = AVAILABLE_SOURCES
+    else:
+        targets = [args.source]
 
     logger.info("==========================================================")
     logger.info("Executing Multi-Source Scrapers: %s", targets)
@@ -162,9 +173,10 @@ def run():
     logger.info("Total harvested across all sources: %d records", total)
     logger.info("==========================================================")
 
-    # Purge empty/dummy files and consolidate daily output into a single file
+    # Purge empty/dummy files and consolidate daily output if requested or running all
     purge_empty_raw_files(output_path)
-    consolidate_daily_scrapes(output_path)
+    if args.source == "all" or args.consolidate:
+        consolidate_daily_scrapes(output_path)
 
 
 if __name__ == "__main__":

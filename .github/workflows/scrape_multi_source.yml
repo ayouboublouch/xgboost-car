@@ -12,21 +12,25 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   scrape:
     name: Scrape ${{ matrix.source }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        source: [avito, moteur, wandaloo, kifal, siaracash]
+        source: [moteur, wandaloo, avito, kifal, siaracash]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
@@ -48,47 +52,76 @@ jobs:
 
       - name: Run Scraper for ${{ matrix.source }}
         id: run_scraper
+        continue-on-error: true
         run: |
           mkdir -p data/raw
           python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 3 }}
 
       - name: Upload Scraped Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: raw-data-${{ matrix.source }}
-          path: data/raw/
+          path: data/raw/${{ matrix.source }}_*
           if-no-files-found: ignore
 
   aggregate-and-commit:
     name: Aggregate & Commit Multi-Source Data
     needs: scrape
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
+      actions: write
     if: always()
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           ref: main
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies for consolidation
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyarrow
 
       - name: Download all scraped artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: raw-data-*
-          path: data/raw/
+          path: data/raw
           merge-multiple: true
 
+      - name: Consolidate daily raw scrapes
+        run: |
+          mkdir -p data/raw
+          python scrapers/run_all.py --source none --consolidate
+
       - name: Commit and push newly collected data
+        id: commit
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git status
           git add data/raw/
           if ! git diff --staged --quiet; then
-            git commit -m "chore(data): ingest multi-source listings [skip ci]"
+            git commit -m "chore(data): ingest new car listings"
             git pull --rebase origin main
             git push origin main
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No new raw data detected to commit."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Trigger Training Workflow
+        if: steps.commit.outputs.committed == 'true'
+        run: gh workflow run train_model.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
