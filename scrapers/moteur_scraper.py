@@ -76,6 +76,53 @@ class MoteurScraper(BaseScraper):
             max_retries=max_retries,
         )
 
+    def extract_phone_from_detail(self, detail_url: str) -> Optional[str]:
+        """Fetch detail page HTML for verified listing to extract seller telephone."""
+        if not detail_url:
+            return None
+        try:
+            html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=6, max_retries=1)
+            if not html:
+                return None
+
+            # 1. Search for tel: links (href="tel:06...")
+            tel_m = re.search(r'href=["\']tel:([^"\']+)["\']', html, re.IGNORECASE)
+            if tel_m:
+                p = extract_moroccan_phone(tel_m.group(1))
+                if p:
+                    return p
+
+            # 2. Search for WhatsApp links (wa.me/06... or wa.me/2126...)
+            wa_m = re.search(r'wa\.me/(\+?212\d{9}|0[5-7]\d{8}|\d+)', html, re.IGNORECASE)
+            if wa_m:
+                p = extract_moroccan_phone(wa_m.group(1))
+                if p:
+                    return p
+
+            # 3. Search for class="ad-contact-phone", .phone-number, etc.
+            pclass_m = re.search(
+                r'class=["\'][^"\']*(?:ad-contact-phone|phone-number|mobile-sticky-phone|contact-phone|seller-phone)[^"\']*["\'][^>]*>(.*?)</',
+                html,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if pclass_m:
+                p = extract_moroccan_phone(pclass_m.group(1))
+                if p:
+                    return p
+
+            # 4. Search for data-phone attribute
+            dp_m = re.search(r'data-phone=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if dp_m:
+                p = extract_moroccan_phone(dp_m.group(1))
+                if p:
+                    return p
+
+            # 5. Fallback: Scan full detail HTML text container with extract_moroccan_phone
+            return extract_moroccan_phone(html)
+        except Exception as e:
+            logger.debug("[%s] Detail phone extraction error for %s: %s", self.source_name, detail_url, e)
+            return None
+
     def parse_card_regex(self, block: str, date_scraped: str) -> Optional[Dict[str, Any]]:
         """Fast, robust regex-based card extractor for Moteur.ma HTML."""
         link_m = re.search(r'href=["\']([^"\']*detail-annonce/(\d+)/?([^"\'\s>]*\.html)?)["\']', block)
@@ -233,6 +280,11 @@ class MoteurScraper(BaseScraper):
 
         if not seller_phone:
             seller_phone = extract_moroccan_phone(block)
+
+        # Detail-page deep phone extraction for verified listings (valid price, year, and recognized brand)
+        if not seller_phone and full_url and "detail-annonce" in full_url:
+            if price_mad and year and brand != "Autre":
+                seller_phone = self.extract_phone_from_detail(full_url)
 
         seller_phone_hash = hash_phone(seller_phone)
 

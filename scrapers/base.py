@@ -170,18 +170,24 @@ class BaseScraper(abc.ABC):
         time.sleep(duration)
 
     def fetch_page(
-        self, url: str, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None
+        self,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: int = 15,
+        max_retries: Optional[int] = None,
     ) -> Optional[str]:
-        """Fetch page content with retries, 15s timeout, and fallback."""
+        """Fetch page content with configurable retries and timeout."""
         default_ua = random.choice(USER_AGENTS)
-        for attempt in range(1, self.max_retries + 1):
+        retries = max_retries if max_retries is not None else self.max_retries
+        for attempt in range(1, retries + 1):
             if self.session is not None:
                 try:
                     self.session.headers["User-Agent"] = default_ua
                     if headers:
                         self.session.headers.update(headers)
 
-                    response = self.session.get(url, params=params, timeout=15, verify=False)
+                    response = self.session.get(url, params=params, timeout=timeout, verify=False)
                     resp_len = len(response.text) if hasattr(response, "text") and response.text else 0
                     if response.status_code == 200:
                         if resp_len < 2000:
@@ -222,7 +228,7 @@ class BaseScraper(abc.ABC):
             # Fallback directly using standard requests or urllib if session had issue
             try:
                 if requests is not None:
-                    r = requests.get(url, params=params, headers={"User-Agent": default_ua}, timeout=15, verify=False)
+                    r = requests.get(url, params=params, headers={"User-Agent": default_ua}, timeout=timeout, verify=False)
                     if r.status_code == 200:
                         return r.text
                 else:
@@ -244,7 +250,7 @@ class BaseScraper(abc.ABC):
                             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
                         }
                     )
-                    with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
+                    with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
                         if resp.status == 200:
                             return resp.read().decode("utf-8", errors="replace")
             except Exception:

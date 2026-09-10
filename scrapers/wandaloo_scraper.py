@@ -74,6 +74,53 @@ class WandalooScraper(BaseScraper):
             max_retries=max_retries,
         )
 
+    def extract_phone_from_detail(self, detail_url: str) -> Optional[str]:
+        """Fetch listing page (/occasion/...html) and parse seller modal/contact block for telephone links."""
+        if not detail_url:
+            return None
+        try:
+            html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=6, max_retries=1)
+            if not html:
+                return None
+
+            # 1. Search for telephone links (href="tel:06...")
+            tel_m = re.search(r'href=["\']tel:([^"\']+)["\']', html, re.IGNORECASE)
+            if tel_m:
+                phone = extract_moroccan_phone(tel_m.group(1))
+                if phone:
+                    return phone
+
+            # 2. Search for WhatsApp links (wa.me)
+            wa_m = re.search(r'wa\.me/(\+?212\d{9}|0[5-7]\d{8}|\d+)', html, re.IGNORECASE)
+            if wa_m:
+                phone = extract_moroccan_phone(wa_m.group(1))
+                if phone:
+                    return phone
+
+            # 3. Parse seller modal / contact block (e.g. modal, contact, seller)
+            modal_m = re.search(
+                r'<(?:div|span|p|a)[^>]*class=["\'][^"\']*(?:seller-phone|modal-contact|phone|telephone|contact-seller|seller-info)[^"\']*["\'][^>]*>(.*?)</(?:div|span|p|a)>',
+                html,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if modal_m:
+                phone = extract_moroccan_phone(modal_m.group(1))
+                if phone:
+                    return phone
+
+            # 4. Search for data-phone
+            dp_m = re.search(r'data-phone=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if dp_m:
+                phone = extract_moroccan_phone(dp_m.group(1))
+                if phone:
+                    return phone
+
+            # 5. Scan full detail HTML text container with extract_moroccan_phone
+            return extract_moroccan_phone(html)
+        except Exception as e:
+            logger.debug("[%s] Detail phone extraction error for %s: %s", self.source_name, detail_url, e)
+            return None
+
     def parse_card_regex(self, block: str, date_scraped: str) -> Optional[Dict[str, Any]]:
         """Extract Wandaloo listing card fields via regex."""
         link_m = re.search(r'href=["\'](https://www\.wandaloo\.com/occasion/[^"\']+/(\d+)\.html)["\']', block)
@@ -152,6 +199,26 @@ class WandalooScraper(BaseScraper):
         date_posted = date_scraped[:10]
 
         # Brand / Model tokens
+        brand = ""
+        model = ""
+        if title_raw:
+            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s]', ' ', title_raw).split() if t]
+            if tokens:
+                brand = tokens[0].capitalize()
+                model = " ".join(tokens[1:]).capitalize() if len(tokens) > 1 else ""
+        if not brand or not model:
+            m_slug = re.search(r'/occasion/([a-zA-Z0-9\-]+)/', url)
+            if m_slug:
+                parts = [p for p in m_slug.group(1).split('-') if p and p not in ('occasion', 'maroc')]
+                if parts and not brand:
+                    brand = parts[0].capitalize()
+                if len(parts) > 1 and not model:
+                    model = parts[1].capitalize()
+        if not brand:
+            brand = "Autre"
+        if not model:
+            model = "Autre"
+
         # Extract description if present
         desc_m = re.search(r'class=["\'][^"\']*(?:desc|detail-txt|texte)[^"\']*["\'][^>]*>(.*?)</(?:p|div)>', block, re.DOTALL | re.IGNORECASE)
         description_raw = desc_m.group(1).strip() if desc_m else ""
@@ -181,6 +248,11 @@ class WandalooScraper(BaseScraper):
 
         if not seller_phone:
             seller_phone = extract_moroccan_phone(block)
+
+        # Detail-page deep phone extraction for verified listings (valid price, year, and recognized brand)
+        if not seller_phone and url and "/occasion/" in url:
+            if price_mad and year and brand != "Autre":
+                seller_phone = self.extract_phone_from_detail(url)
 
         seller_phone_hash = hash_phone(seller_phone)
 

@@ -422,7 +422,7 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df["seller_phone_hash"] = df.apply(resolve_seller_phone_hash, axis=1)
     n_phones = df["seller_phone"].notna().sum()
     n_hashes = df["seller_phone_hash"].notna().sum()
-    logger.info("Seller phone coverage: %d raw numbers extracted, %d hashes populated", n_phones, n_hashes)
+    logger.info("Total captured seller phone numbers: %d raw numbers verified, %d privacy hashes populated across %d records", n_phones, n_hashes, len(df))
 
     # Clean numeric fields
     for col in ["price_mad", "year", "mileage_km", "doors_count", "photos_count"]:
