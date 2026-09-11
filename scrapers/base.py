@@ -72,12 +72,16 @@ SCHEMA_FIELDS = [
 ]
 
 
+BLACKLIST_PHONES = {"0520428686", "0522000000", "0802000000"}
+
+
 def extract_moroccan_phone(text: Any) -> Optional[str]:
     r"""
     Extract and normalize Moroccan customer/seller phone numbers.
     Pattern matches mobile and landline numbers (05, 06, 07):
     Regex: r'(?:(?:\+|00)212|0)\s*[5-7](?:[\s\.-]*\d{2}){4}'
     Normalizes to 10-digit format (e.g., '+212612345678' -> '0612345678').
+    Filters out known platform support/customer service numbers (BLACKLIST_PHONES).
     """
     if text is None or pd.isna(text):
         return None
@@ -96,6 +100,8 @@ def extract_moroccan_phone(text: Any) -> Optional[str]:
         digits = "0" + digits[5:]
 
     if len(digits) == 10 and digits.startswith("0") and digits[1] in "567":
+        if digits in BLACKLIST_PHONES:
+            return None
         return digits
     return None
 
@@ -307,12 +313,23 @@ class BaseScraper(abc.ABC):
         if not seller_phone and raw_record.get("title_raw"):
             seller_phone = extract_moroccan_phone(raw_record.get("title_raw"))
 
+        # Discard if blacklisted or invalid format
+        if seller_phone in BLACKLIST_PHONES:
+            seller_phone = None
+
+        if seller_phone:
+            if not (len(seller_phone) == 10 and seller_phone.startswith("0") and seller_phone[1] in "567"):
+                seller_phone = None
+
         # Compute or preserve SHA-256 hash of phone
-        seller_phone_hash = raw_record.get("seller_phone_hash")
-        if not seller_phone_hash or pd.isna(seller_phone_hash) or str(seller_phone_hash).strip() == "" or str(seller_phone_hash).lower() == "nan":
-            seller_phone_hash = hash_phone(seller_phone)
+        if not seller_phone:
+            seller_phone_hash = None
         else:
-            seller_phone_hash = str(seller_phone_hash).strip()
+            seller_phone_hash = raw_record.get("seller_phone_hash")
+            if not seller_phone_hash or pd.isna(seller_phone_hash) or str(seller_phone_hash).strip() == "" or str(seller_phone_hash).lower() == "nan":
+                seller_phone_hash = hash_phone(seller_phone)
+            else:
+                seller_phone_hash = str(seller_phone_hash).strip()
 
         # Standardize record
         record: Dict[str, Any] = {
