@@ -472,6 +472,13 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Detect Cross-Source Matches & Construct unified leakage_group_id
     df = compute_cross_source_matches(df)
 
+    # Harden all object columns for Parquet / PyArrow schema compatibility
+    for col in df.columns:
+        if df[col].dtype == "object":
+            df[col] = df[col].apply(
+                lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" and str(x).lower() not in ("nan", "none", "<na>") else None
+            )
+
     # Sort deterministically by date_scraped
     df = df.sort_values("date_scraped").reset_index(drop=True)
     return df

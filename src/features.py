@@ -180,6 +180,13 @@ def main():
 
     df_featured = engineer_features(df)
 
+    # Harden all object columns for Parquet / PyArrow schema compatibility
+    for col in df_featured.columns:
+        if df_featured[col].dtype == "object":
+            df_featured[col] = df_featured[col].apply(
+                lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" and str(x).lower() not in ("nan", "none", "<na>") else None
+            )
+
     out_parquet = output_dir / "features_cars.parquet"
     out_csv = output_dir / "features_cars.csv"
 

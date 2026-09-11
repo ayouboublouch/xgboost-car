@@ -411,7 +411,7 @@ def purge_empty_raw_files(raw_dir: Path) -> List[str]:
     for file_path in raw_dir.iterdir():
         if not file_path.is_file():
             continue
-        if file_path.name == "used_car_training_combined.csv":
+        if file_path.name == "used_car_training_combined.csv" or file_path.name.startswith("avito_local_"):
             continue
 
         should_delete = False
@@ -483,7 +483,9 @@ def consolidate_daily_scrapes(
         matching_csvs = [
             f
             for f in raw_dir.glob(pattern)
-            if not f.name.startswith("scraped_combined_") and f.name != "used_car_training_combined.csv"
+            if not f.name.startswith("scraped_combined_")
+            and not f.name.startswith("avito_local_")
+            and f.name != "used_car_training_combined.csv"
         ]
         if not matching_csvs:
             continue
@@ -540,6 +542,11 @@ def consolidate_daily_scrapes(
 
         merged_df.to_csv(out_csv, index=False, encoding="utf-8")
         try:
+            for col in merged_df.columns:
+                if merged_df[col].dtype == "object":
+                    merged_df[col] = merged_df[col].apply(
+                        lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" and str(x).lower() not in ("nan", "none", "<na>") else None
+                    )
             merged_df.to_parquet(out_parquet, index=False, engine="pyarrow")
         except Exception:
             pass
