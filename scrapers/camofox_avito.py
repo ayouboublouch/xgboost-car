@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Camoufox Avito.ma Local Stealth Scraper
-=======================================
+Camoufox Avito.ma Local Stealth Deep Scraper
+=============================================
 Local stealth crawler utilizing Camoufox (stealth Firefox browser)
-to bypass Cloudflare Turnstile / Bot Management on Moroccan Avito (avito.ma)
-and perform interactive click-to-reveal seller phone number extraction.
+to bypass Cloudflare Turnstile / Bot Management on Moroccan Avito (avito.ma),
+performing two-stage deep extraction:
+  1. Index Phase: Discovers individual listing URLs on search listing pages.
+  2. Detail & Phone Phase: Opens each listing page, extracts rich vehicle
+     specs from JSON-LD / DOM, and executes click-to-reveal phone extraction.
 
 Designed strictly for local residential runs to prevent IP bans and Cloudflare
 datacenter blocks without adding heavy browser dependencies to the GitHub Actions runner.
@@ -14,7 +17,8 @@ Installation:
     camoufox fetch
 
 Usage:
-    python scrapers/camofox_avito.py --max-pages 2 --headless
+    python scrapers/camofox_avito.py --max-listings 5
+    python scrapers/camofox_avito.py --max-pages 2
     python scrapers/camofox_avito.py --url "https://www.avito.ma/fr/..._58374652.htm"
 """
 
@@ -67,6 +71,17 @@ import pandas as pd
 # Platform customer care numbers blacklist
 BLACKLIST_PHONES: Set[str] = {"0520428686", "0522000000", "0802000000"}
 
+KNOWN_BRANDS = [
+    "Alfa Romeo", "Aston Martin", "Audi", "Bentley", "BMW", "BYD", "Chery", "Chevrolet",
+    "Chrysler", "Citroën", "Citroen", "Cupra", "Dacia", "Daihatsu", "Dodge", "DS", "Ferrari",
+    "Fiat", "Ford", "Geely", "GMC", "Great Wall", "Haval", "Honda", "Hummer",
+    "Hyundai", "Infiniti", "Isuzu", "Iveco", "Jaguar", "Jeep", "Kia", "Lada", "Lamborghini",
+    "Lancia", "Land Rover", "Lexus", "Maserati", "Mahindra", "Mazda", "Mercedes-Benz",
+    "Mercedes", "MG", "Mini", "Mitsubishi", "Nissan", "Opel", "Peugeot", "Porsche",
+    "Range Rover", "Renault", "Rolls-Royce", "Rover", "Saab", "Seat", "Skoda", "Smart",
+    "Ssangyong", "Subaru", "Suzuki", "Tesla", "Toyota", "Volkswagen", "Volvo",
+]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -77,13 +92,13 @@ logger = logging.getLogger("scraper.camoufox_avito")
 
 class CamoufoxAvitoScraper(BaseScraper):
     source_name = "avito"
-    BASE_URL = "https://www.avito.ma/fr/maroc/voitures-%C3%A0_vendre"
+    BASE_URL = "https://www.avito.ma/fr/maroc/voitures_d_occasion--%C3%A0_vendre"
 
     def __init__(
         self,
         output_dir: str = "data/raw",
-        delay_min: float = 2.0,
-        delay_max: float = 4.0,
+        delay_min: float = 1.0,
+        delay_max: float = 2.0,
         headless: bool = True,
     ):
         super().__init__(output_dir=output_dir, delay_min=delay_min, delay_max=delay_max)
@@ -107,22 +122,29 @@ class CamoufoxAvitoScraper(BaseScraper):
         clicked = False
         for sel in btn_selectors:
             try:
-                btn = page.query_selector(sel)
-                if btn and btn.is_visible():
-                    try:
-                        btn.click(timeout=5000)
-                        clicked = True
-                        break
-                    except Exception:
-                        page.click(sel, timeout=5000)
-                        clicked = True
-                        break
+                buttons = page.query_selector_all(sel)
+                for b in buttons:
+                    if b.is_visible():
+                        try:
+                            b.click(timeout=3000)
+                            clicked = True
+                            break
+                        except Exception:
+                            try:
+                                b.dispatch_event("click")
+                                clicked = True
+                                break
+                            except Exception:
+                                pass
+                if clicked:
+                    break
             except Exception:
                 continue
 
         if clicked:
+            time.sleep(1.5)
             try:
-                page.wait_for_selector('a[href^="tel:"], .modal, [role="dialog"]', timeout=4000)
+                page.wait_for_selector('a[href^="tel:"], .modal, [role="dialog"]', timeout=3000)
             except Exception:
                 pass
 
@@ -140,9 +162,9 @@ class CamoufoxAvitoScraper(BaseScraper):
             # Or parse text inside popup modal dialog
             if not seller_phone:
                 try:
-                    modal_el = page.query_selector('[role="dialog"], .modal, div[class*="modal"]')
-                    if modal_el:
-                        candidate = extract_moroccan_phone(modal_el.inner_text())
+                    dialog_el = page.query_selector('[role="dialog"], .modal, div[class*="modal"]')
+                    if dialog_el:
+                        candidate = extract_moroccan_phone(dialog_el.inner_text())
                         if candidate and candidate not in BLACKLIST_PHONES:
                             seller_phone = candidate
                 except Exception as e:
@@ -178,11 +200,43 @@ class CamoufoxAvitoScraper(BaseScraper):
 
         return seller_phone
 
-    def scrape_listing_page(self, page: Any, listing_url: str, date_scraped: str) -> Optional[Dict[str, Any]]:
-        """Open listing detail page, extract attributes via LD+JSON & DOM, and reveal seller phone."""
-        logger.info("[%s] Fetching listing details: %s", self.source_name, listing_url)
+    def _infer_brand_and_model(self, title_raw: str, url: str, breadcrumbs: List[str]) -> tuple:
+        """Accurately deduce brand and model so neither is left as 'Autre' if discernible."""
+        brand = ""
+        model = ""
+        haystack = f"{title_raw} {url} {' '.join(breadcrumbs)}"
 
-        # Extract listing ID
+        for b in KNOWN_BRANDS:
+            # Case-insensitive whole word boundary match
+            if re.search(rf"\b{re.escape(b)}\b", haystack, re.IGNORECASE):
+                brand = b
+                break
+
+        if brand:
+            # Extract model from title after the brand name
+            m_match = re.search(rf"\b{re.escape(brand)}\s+([a-zA-Z0-9\-_]+(?:\s+[a-zA-Z0-9\-_]+)?)", title_raw, re.IGNORECASE)
+            if m_match:
+                model = m_match.group(1).strip()
+            else:
+                # Try from URL slug
+                slug_m = re.search(rf"voitures_d_occasion/([^/]+)_(\d+)\.htm", url)
+                if slug_m:
+                    slug = slug_m.group(1).replace("_", " ")
+                    slug_match = re.search(rf"\b{re.escape(brand)}\s+([a-zA-Z0-9\-_]+(?:\s+[a-zA-Z0-9\-_]+)?)", slug, re.IGNORECASE)
+                    if slug_match:
+                        model = slug_match.group(1).strip()
+
+        if not brand and title_raw:
+            tokens = [t for t in re.sub(r"[^a-zA-Z0-9À-ÿ\s]", " ", title_raw).split() if t]
+            if tokens:
+                brand = tokens[0].capitalize()
+                if len(tokens) > 1:
+                    model = " ".join(tokens[1:3]).capitalize()
+
+        return brand or "Autre", model or "Autre"
+
+    def scrape_listing_page(self, page: Any, listing_url: str, date_scraped: str) -> Optional[Dict[str, Any]]:
+        """Open listing detail page, extract core specs via LD+JSON & DOM, and reveal seller phone."""
         id_m = re.search(r"_(\d+)\.htm", listing_url)
         listing_id = id_m.group(1) if id_m else None
         if not listing_id:
@@ -197,19 +251,21 @@ class CamoufoxAvitoScraper(BaseScraper):
 
         html = page.content()
 
-        # Check Cloudflare
+        # Handle Cloudflare Challenge if any
         if "Attention Required! | Cloudflare" in html or "cf-browser-verification" in html:
-            logger.warning("[%s] Cloudflare verification on listing page. Waiting 5s...", self.source_name)
+            logger.warning("[%s] Cloudflare verification encountered. Waiting 5s...", self.source_name)
             time.sleep(5.0)
             html = page.content()
 
-        # Parse LD+JSON scripts
+        # Parse JSON-LD scripts
         title_raw = ""
         brand = ""
+        model = ""
         description_raw = ""
         price_mad = None
         photos_count = 1.0
         city = ""
+        breadcrumbs: List[str] = []
 
         scripts = re.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.DOTALL)
         for s in scripts:
@@ -218,7 +274,11 @@ class CamoufoxAvitoScraper(BaseScraper):
                 if isinstance(data, dict):
                     if data.get("@type") in ("Car", "Product", "Vehicle"):
                         title_raw = data.get("name") or title_raw
-                        brand = data.get("brand") or brand
+                        b_val = data.get("brand")
+                        if isinstance(b_val, dict):
+                            brand = b_val.get("name") or brand
+                        elif isinstance(b_val, str):
+                            brand = b_val
                         description_raw = data.get("description") or description_raw
                         offers = data.get("offers")
                         if isinstance(offers, dict):
@@ -232,6 +292,9 @@ class CamoufoxAvitoScraper(BaseScraper):
                             photos_count = 1.0
                     elif data.get("@type") == "BreadcrumbList":
                         items = data.get("itemListElement") or []
+                        for it in items:
+                            if isinstance(it, dict) and it.get("name"):
+                                breadcrumbs.append(it["name"])
                         if len(items) >= 3 and isinstance(items[2], dict):
                             city = items[2].get("name") or city
             except Exception:
@@ -250,7 +313,7 @@ class CamoufoxAvitoScraper(BaseScraper):
         except Exception:
             pass
 
-        # Map specs
+        # Map specifications
         year_raw = specs.get("année-modèle") or specs.get("annee-modele") or specs.get("année") or specs.get("annee")
         mileage_raw = specs.get("kilométrage") or specs.get("kilometrage")
         transmission_raw = specs.get("boite de vitesses") or specs.get("boîte de vitesses") or specs.get("boite")
@@ -260,36 +323,46 @@ class CamoufoxAvitoScraper(BaseScraper):
         owners_raw = specs.get("première main") or specs.get("premiere main")
         condition_raw = specs.get("état") or specs.get("etat")
         customs_raw = specs.get("dédouané") or specs.get("dedouane")
-        model_raw = specs.get("modèle") or specs.get("modele") or ""
-        if not brand:
-            brand = specs.get("marque") or ""
+        if not brand or brand == "Autre":
+            brand = specs.get("marque") or brand
+        if not model or model == "Autre":
+            model = specs.get("modèle") or specs.get("modele") or model
 
         # Fallback for title
         if not title_raw:
             h1 = page.query_selector("h1")
             title_raw = h1.inner_text().strip() if h1 else ""
 
-        # Fallback brand / model from title tokens
-        if not brand or brand == "Autre":
-            if title_raw:
-                tokens = [t for t in re.sub(r"[^a-zA-Z0-9À-ÿ\s]", " ", title_raw).split() if t]
-                if tokens:
-                    brand = tokens[0].capitalize()
-                    if not model_raw and len(tokens) > 1:
-                        model_raw = " ".join(tokens[1:]).capitalize()
-        if not brand:
-            brand = "Autre"
-        if not model_raw:
-            model_raw = "Autre"
+        # Normalize city from URL if missing
+        if not city:
+            city_m = re.search(r"/fr/([^/]+)/voitures_d_occasion/", listing_url)
+            if city_m:
+                city = city_m.group(1).replace("_", " ").title()
+
+        # Deduce brand & model accurately (never leave as 'Autre' if discernible)
+        if not brand or brand == "Autre" or not model or model == "Autre":
+            inferred_b, inferred_m = self._infer_brand_and_model(title_raw, listing_url, breadcrumbs)
+            if not brand or brand == "Autre":
+                brand = inferred_b
+            if not model or model == "Autre":
+                model = inferred_m
+
+        # Fallback for price from DOM if not in JSON-LD
+        if price_mad is None or price_mad == 0:
+            try:
+                for sel in ['[data-cy*="price"]', 'p[class*="price"]', 'span[class*="price"]', 'div[class*="price"]']:
+                    p_el = page.query_selector(sel)
+                    if p_el:
+                        p_val = self.clean_numeric(p_el.inner_text())
+                        if p_val and p_val > 1000:
+                            price_mad = p_val
+                            break
+            except Exception:
+                pass
 
         # Interactive click-to-reveal phone extraction
         seller_phone = self.extract_seller_phone_from_page(page, description_raw=description_raw)
         seller_phone_hash = hash_phone(seller_phone)
-
-        if seller_phone:
-            logger.info("[%s] Captured real seller phone: %s (hash: %s...)", self.source_name, seller_phone, seller_phone_hash[:12])
-        else:
-            logger.info("[%s] No seller phone available for listing %s", self.source_name, listing_id)
 
         raw_record = {
             "listing_id": listing_id,
@@ -299,9 +372,9 @@ class CamoufoxAvitoScraper(BaseScraper):
             "date_scraped": date_scraped,
             "title_raw": title_raw,
             "brand": brand,
-            "model": model_raw,
+            "model": model,
             "trim": "",
-            "year": self.clean_year(year_raw),
+            "year": self.clean_year(year_raw) or self.clean_year(title_raw),
             "mileage_km": self.clean_numeric(mileage_raw),
             "fuel_type": fuel_raw or "",
             "transmission": transmission_raw or "",
@@ -323,12 +396,12 @@ class CamoufoxAvitoScraper(BaseScraper):
 
     def scrape(
         self,
-        max_pages: int = 2,
+        max_pages: int = 1,
         target_url: Optional[str] = None,
         max_listings: Optional[int] = None,
         **kwargs,
     ) -> pd.DataFrame:
-        """Crawl Avito.ma using stealth Camoufox browser with click-to-reveal phone extraction."""
+        """Crawl Avito.ma using stealth Camoufox browser with two-stage deep extraction."""
         if not CAMOUFOX_AVAILABLE:
             logger.error(
                 "Camoufox is not installed in the active environment.\n"
@@ -351,28 +424,34 @@ class CamoufoxAvitoScraper(BaseScraper):
                     rec = self.scrape_listing_page(page, target_url, date_scraped)
                     if rec:
                         all_records.append(rec)
+                        logger.info(
+                            "[%s] (1/1) Scraped %s %s (%s) - Phone: %s - %s MAD",
+                            self.source_name,
+                            rec.get("brand"),
+                            rec.get("model"),
+                            int(rec.get("year")) if rec.get("year") else "N/A",
+                            rec.get("seller_phone") or "None",
+                            f"{int(rec.get('price_mad'))}" if rec.get("price_mad") else "N/A",
+                        )
                 else:
-                    logger.info(
-                        "[%s] Launching Camoufox stealth browser (headless=%s) for %d pages...",
-                        self.source_name,
-                        self.headless,
-                        max_pages,
-                    )
+                    # Step A: Index Phase - discover listing URLs from search pages
+                    all_listing_urls: List[str] = []
+                    seen_urls: Set[str] = set()
 
                     for p in range(1, max_pages + 1):
-                        page_url = f"{self.BASE_URL}?o={p}" if p > 1 else self.BASE_URL
-                        logger.info("[%s] Navigating to search page %d: %s", self.source_name, p, page_url)
+                        search_url = f"{self.BASE_URL}?o={p}" if p > 1 else self.BASE_URL
+                        logger.info("[%s] [Index Phase] Navigating to search page %d: %s", self.source_name, p, search_url)
 
                         try:
-                            page.goto(page_url, wait_until="domcontentloaded", timeout=45000)
-                            time.sleep(3.0)
+                            page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
+                            time.sleep(2.0)
                         except Exception as e:
-                            logger.warning("[%s] Page %d navigation error: %s", self.source_name, p, e)
+                            logger.warning("[%s] Search page %d navigation error: %s", self.source_name, p, e)
                             continue
 
                         page_html = page.content()
                         if "Attention Required! | Cloudflare" in page_html or "cf-browser-verification" in page_html:
-                            logger.warning("[%s] Cloudflare challenge encountered on page %d. Solving...", self.source_name, p)
+                            logger.warning("[%s] Cloudflare challenge encountered on search page %d. Waiting 5s...", self.source_name, p)
                             time.sleep(5.0)
                             page_html = page.content()
 
@@ -381,30 +460,54 @@ class CamoufoxAvitoScraper(BaseScraper):
                             r'href=["\']((?:https://www\.avito\.ma)?/fr/[^"\']*_(\d+)\.htm)["\']',
                             page_html,
                         )
-                        seen_urls: Set[str] = set()
-                        listing_urls: List[str] = []
+                        page_found = 0
                         for l_url, _ in links:
                             if not l_url.startswith("http"):
                                 l_url = urljoin("https://www.avito.ma", l_url)
                             if l_url not in seen_urls:
                                 seen_urls.add(l_url)
-                                listing_urls.append(l_url)
+                                all_listing_urls.append(l_url)
+                                page_found += 1
 
-                        logger.info("[%s] Page %d found %d listing URLs.", self.source_name, p, len(listing_urls))
+                        logger.info("[%s] [Index Phase] Page %d discovered %d new listing URLs (total: %d)", self.source_name, p, page_found, len(all_listing_urls))
 
-                        for l_idx, l_url in enumerate(listing_urls):
+                    total_discovered = len(all_listing_urls)
+                    target_count = max_listings or total_discovered
+                    logger.info("[%s] [Detail & Phone Phase] Deeply extracting up to %d verified listings...", self.source_name, target_count)
+
+                    # Step B: Detail & Phone Phase - visit each listing URL
+                    for l_url in all_listing_urls:
+                        rec = self.scrape_listing_page(page, l_url, date_scraped)
+                        if rec:
+                            # Verify row quality
+                            is_valid_row = bool(
+                                rec.get("brand")
+                                and rec.get("brand") != "Autre"
+                                and rec.get("price_mad")
+                                and rec.get("price_mad") > 0
+                                and rec.get("seller_phone")
+                            )
+
+                            if is_valid_row or not max_listings:
+                                all_records.append(rec)
+                                idx = len(all_records)
+                                logger.info(
+                                    "[%s] (%d/%d) Scraped %s %s (%s) - Phone: %s - %s MAD",
+                                    self.source_name,
+                                    idx,
+                                    target_count,
+                                    rec.get("brand"),
+                                    rec.get("model"),
+                                    int(rec.get("year")) if rec.get("year") else "N/A",
+                                    rec.get("seller_phone") or "None",
+                                    f"{int(rec.get('price_mad'))}" if rec.get("price_mad") else "N/A",
+                                )
+
                             if max_listings and len(all_records) >= max_listings:
                                 break
 
-                            rec = self.scrape_listing_page(page, l_url, date_scraped)
-                            if rec:
-                                all_records.append(rec)
-
-                            # Polite delay between listing pages
-                            time.sleep(random.uniform(self.delay_min, self.delay_max))
-
-                        if max_listings and len(all_records) >= max_listings:
-                            break
+                        # Polite delay between listing detail visits (1 to 2 seconds)
+                        time.sleep(random.uniform(self.delay_min, self.delay_max))
 
         except Exception as e:
             logger.error("[%s] Unexpected Camoufox execution error: %s", self.source_name, e)
@@ -428,6 +531,12 @@ class CamoufoxAvitoScraper(BaseScraper):
             logger.warning("[%s] Scraper harvested 0 records. Writing nothing.", self.source_name)
             return
 
+        # Drop any row where brand == 'Autre' and price_mad is missing
+        initial_len = len(df)
+        df = df[~((df["brand"] == "Autre") & (df["price_mad"].isna()))]
+        if len(df) < initial_len:
+            logger.info("[%s] Dropped %d invalid rows (brand=='Autre' and missing price).", self.source_name, initial_len - len(df))
+
         for col in SCHEMA_FIELDS:
             if col not in df.columns:
                 df[col] = None
@@ -447,9 +556,9 @@ class CamoufoxAvitoScraper(BaseScraper):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Camoufox Avito.ma Local Stealth Scraper")
-    parser.add_argument("--max-pages", type=int, default=2, help="Max pages to scrape (default: 2)")
-    parser.add_argument("--max-listings", type=int, default=None, help="Max total listings to scrape")
+    parser = argparse.ArgumentParser(description="Camoufox Avito.ma Local Stealth Deep Scraper")
+    parser.add_argument("--max-pages", type=int, default=1, help="Max search pages to index (default: 1)")
+    parser.add_argument("--max-listings", type=int, default=5, help="Max total listings to deeply scrape (default: 5)")
     parser.add_argument("--url", type=str, default=None, help="Scrape a specific listing URL directly")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
     parser.add_argument("--no-headless", action="store_true", help="Launch browser with GUI visible for debugging")
@@ -464,7 +573,7 @@ def main():
         target_url=args.url,
         max_listings=args.max_listings,
     )
-    print(f"Scraped {len(df)} records for Avito.ma using Camoufox.")
+    print(f"\nSuccessfully scraped {len(df)} deep records for Avito.ma using Camoufox.")
 
 
 if __name__ == "__main__":
