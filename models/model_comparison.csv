@@ -1,6 +1,6 @@
-model,MAE_MAD,MAPE_%,R2,within_10_%,within_15_%
-CatBoost (Selected),68966.01,40.15,0.4224,26.98,34.92
-LightGBM,71343.14,55.72,0.5089,18.52,30.16
-RandomForest,80164.11,54.37,0.2168,23.28,35.45
-Ridge Regression,84366.94,65.13,0.445,13.76,24.87
-Baseline Median,97664.81,82.98,-0.1909,26.98,35.45
+model,MAE_MAD,MAPE_%,R2,val_MAE_MAD,val_MAPE_%,val_R2,within_10_%,within_15_%,meets_target_<20%
+CatBoost (Selected),106531.61,37.1,0.1892,55636.8,37.14,0.2912,29.69,41.15,False
+RandomForest,113079.16,48.78,0.2483,78979.9,60.4,0.0267,29.17,37.5,False
+LightGBM,129836.92,66.96,0.148,91856.75,80.92,0.1275,14.06,20.83,False
+Ridge Regression,136653.8,65.37,0.1642,100062.22,81.39,0.0764,11.46,17.19,False
+Baseline Median,137211.72,67.56,0.1989,84888.02,70.3,0.0781,20.83,28.12,False

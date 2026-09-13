@@ -446,6 +446,7 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         df["date_scraped"] = df["date_scraped"].fillna(now_str)
 
     # Outlier Detection (Cahier des Charges bounds)
+    # Note: Missing mileage is MNAR (handled via mileage_is_missing + imputation in features.py)
     is_outlier = (
         df["price_mad"].isna()
         | (df["price_mad"] < 10000)
@@ -453,9 +454,7 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         | df["year"].isna()
         | (df["year"] < 1980)
         | (df["year"] > 2027)
-        | df["mileage_km"].isna()
-        | (df["mileage_km"] < 0)
-        | (df["mileage_km"] > 600000)
+        | (df["mileage_km"].notna() & ((df["mileage_km"] < 0) | (df["mileage_km"] > 600000)))
     )
 
     if "is_outlier" in df.columns:
