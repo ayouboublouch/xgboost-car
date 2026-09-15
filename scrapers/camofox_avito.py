@@ -396,9 +396,9 @@ class CamoufoxAvitoScraper(BaseScraper):
 
     def scrape(
         self,
-        max_pages: int = 1,
+        max_pages: int = 5,
         target_url: Optional[str] = None,
-        max_listings: Optional[int] = None,
+        max_listings: Optional[int] = 100,
         **kwargs,
     ) -> pd.DataFrame:
         """Crawl Avito.ma using stealth Camoufox browser with two-stage deep extraction."""
@@ -413,6 +413,25 @@ class CamoufoxAvitoScraper(BaseScraper):
 
         all_records: List[Dict[str, Any]] = []
         date_scraped = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Deduplication setup: Pre-load already scraped listing IDs and URLs from output_dir
+        seen_urls: Set[str] = set()
+        for f in self.output_dir.glob("avito_local_*.csv"):
+            try:
+                prev_df = pd.read_csv(f, usecols=["listing_id", "url"], low_memory=False)
+                for _, row in prev_df.iterrows():
+                    if pd.notna(row.get("listing_id")):
+                        self.seen_ids.add(str(row["listing_id"]).strip())
+                    if pd.notna(row.get("url")):
+                        seen_urls.add(str(row["url"]).strip())
+            except Exception:
+                pass
+        logger.info(
+            "[%s] Pre-loaded %d existing scraped listing IDs and %d URLs for deduplication",
+            self.source_name,
+            len(self.seen_ids),
+            len(seen_urls),
+        )
 
         try:
             with Camoufox(headless=self.headless) as browser:
@@ -436,7 +455,6 @@ class CamoufoxAvitoScraper(BaseScraper):
                 else:
                     # Step A: Index Phase - discover listing URLs from search pages
                     all_listing_urls: List[str] = []
-                    seen_urls: Set[str] = set()
 
                     for p in range(1, max_pages + 1):
                         search_url = f"{self.BASE_URL}?o={p}" if p > 1 else self.BASE_URL
@@ -461,22 +479,43 @@ class CamoufoxAvitoScraper(BaseScraper):
                             page_html,
                         )
                         page_found = 0
-                        for l_url, _ in links:
+                        for l_url, l_id in links:
                             if not l_url.startswith("http"):
                                 l_url = urljoin("https://www.avito.ma", l_url)
-                            if l_url not in seen_urls:
-                                seen_urls.add(l_url)
-                                all_listing_urls.append(l_url)
-                                page_found += 1
+                            if l_url in seen_urls or l_id in self.seen_ids:
+                                continue
+                            seen_urls.add(l_url)
+                            all_listing_urls.append(l_url)
+                            page_found += 1
 
-                        logger.info("[%s] [Index Phase] Page %d discovered %d new listing URLs (total: %d)", self.source_name, p, page_found, len(all_listing_urls))
+                        logger.info(
+                            "[%s] [Index Phase] Page %d discovered %d new unvisited listing URLs (total queued: %d)",
+                            self.source_name,
+                            p,
+                            page_found,
+                            len(all_listing_urls),
+                        )
+
+                        if max_listings and len(all_listing_urls) >= max_listings:
+                            logger.info(
+                                "[%s] Discovered enough candidate URLs (%d >= %d). Halting search index phase.",
+                                self.source_name,
+                                len(all_listing_urls),
+                                max_listings,
+                            )
+                            break
 
                     total_discovered = len(all_listing_urls)
-                    target_count = max_listings or total_discovered
+                    target_count = min(max_listings, total_discovered) if max_listings else total_discovered
                     logger.info("[%s] [Detail & Phone Phase] Deeply extracting up to %d verified listings...", self.source_name, target_count)
 
                     # Step B: Detail & Phone Phase - visit each listing URL
                     for l_url in all_listing_urls:
+                        # Skip if already verified in session
+                        id_m = re.search(r"_(\d+)\.htm", l_url)
+                        if id_m and id_m.group(1) in self.seen_ids:
+                            continue
+
                         rec = self.scrape_listing_page(page, l_url, date_scraped)
                         if rec:
                             # Verify row quality
@@ -503,6 +542,11 @@ class CamoufoxAvitoScraper(BaseScraper):
                                     f"{int(rec.get('price_mad'))}" if rec.get("price_mad") else "N/A",
                                 )
 
+                                # Periodic checkpoint save every 10 listings
+                                if idx % 10 == 0:
+                                    logger.info("[%s] Checkpoint: auto-saving %d verified records ...", self.source_name, idx)
+                                    self.save_output(pd.DataFrame(all_records))
+
                             if max_listings and len(all_records) >= max_listings:
                                 break
 
@@ -522,7 +566,7 @@ class CamoufoxAvitoScraper(BaseScraper):
         return df
 
     def save_output(self, df: pd.DataFrame) -> None:
-        """Persist harmonized DataFrame to data/raw/avito_local_{YYYY-MM-DD}.csv and Parquet."""
+        """Persist harmonized DataFrame to data/raw/avito_local_{YYYY-MM-DD}.csv and Parquet with append/resume."""
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         csv_path = self.output_dir / f"avito_local_{today_str}.csv"
         parquet_path = self.output_dir / f"avito_local_{today_str}.parquet"
@@ -537,28 +581,49 @@ class CamoufoxAvitoScraper(BaseScraper):
         if len(df) < initial_len:
             logger.info("[%s] Dropped %d invalid rows (brand=='Autre' and missing price).", self.source_name, initial_len - len(df))
 
+        # Resume/Append: If existing file exists, load and concatenate without overwriting
+        if csv_path.exists():
+            try:
+                existing_df = pd.read_csv(csv_path, low_memory=False)
+                if not existing_df.empty and len(existing_df) > 0:
+                    df = pd.concat([existing_df, df], ignore_index=True)
+            except Exception as e:
+                logger.warning("[%s] Could not read existing %s: %s", self.source_name, csv_path.name, e)
+
         for col in SCHEMA_FIELDS:
             if col not in df.columns:
                 df[col] = None
-        df = df[SCHEMA_FIELDS].drop_duplicates(subset=["listing_id"])
+
+        dedup_cols = [c for c in ["listing_id", "url"] if c in df.columns]
+        if dedup_cols:
+            df = df.drop_duplicates(subset=dedup_cols, keep="last")
+        else:
+            df = df.drop_duplicates(subset=["listing_id"], keep="last")
+
+        df = df[SCHEMA_FIELDS]
 
         try:
             df.to_csv(csv_path, index=False, encoding="utf-8")
-            logger.info("[%s] Saved %d records to %s", self.source_name, len(df), csv_path)
+            logger.info("[%s] Saved %d cumulative records to %s", self.source_name, len(df), csv_path)
         except Exception as e:
             logger.error("[%s] Failed to save CSV: %s", self.source_name, e)
 
         try:
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    df[col] = df[col].apply(
+                        lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" and str(x).lower() not in ("nan", "none", "<na>") else None
+                    )
             df.to_parquet(parquet_path, index=False, engine="pyarrow")
-            logger.info("[%s] Saved %d records to %s", self.source_name, len(df), parquet_path)
+            logger.info("[%s] Saved %d cumulative records to %s", self.source_name, len(df), parquet_path)
         except Exception as e:
             logger.error("[%s] Failed to save Parquet: %s", self.source_name, e)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Camoufox Avito.ma Local Stealth Deep Scraper")
-    parser.add_argument("--max-pages", type=int, default=1, help="Max search pages to index (default: 1)")
-    parser.add_argument("--max-listings", type=int, default=5, help="Max total listings to deeply scrape (default: 5)")
+    parser.add_argument("--max-pages", type=int, default=5, help="Max search pages to index (default: 5)")
+    parser.add_argument("--max-listings", type=int, default=100, help="Max total listings to deeply scrape (default: 100)")
     parser.add_argument("--url", type=str, default=None, help="Scrape a specific listing URL directly")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
     parser.add_argument("--no-headless", action="store_true", help="Launch browser with GUI visible for debugging")

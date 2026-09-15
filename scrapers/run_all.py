@@ -98,8 +98,8 @@ def run():
     parser.add_argument(
         "--max-pages",
         type=int,
-        default=30,
-        help="Maximum pages to scrape per provider (default: 30)",
+        default=50,
+        help="Maximum pages to scrape per provider (default: 50)",
     )
     parser.add_argument(
         "--min-rows",

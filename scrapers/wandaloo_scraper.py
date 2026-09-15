@@ -15,6 +15,7 @@ import datetime
 import logging
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
@@ -28,9 +29,23 @@ if str(SCRAPERS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRAPERS_DIR))
 
 try:
-    from scrapers.base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
+    from scrapers.base import (
+        BaseScraper,
+        SCHEMA_FIELDS,
+        extract_moroccan_phone,
+        hash_phone,
+        infer_moroccan_region,
+        KNOWN_BRANDS,
+    )
 except ImportError:
-    from base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
+    from base import (
+        BaseScraper,
+        SCHEMA_FIELDS,
+        extract_moroccan_phone,
+        hash_phone,
+        infer_moroccan_region,
+        KNOWN_BRANDS,
+    )
 
 try:
     from bs4 import BeautifulSoup
@@ -74,12 +89,22 @@ class WandalooScraper(BaseScraper):
             max_retries=max_retries,
         )
 
-    def extract_phone_from_detail(self, detail_url: str) -> Optional[str]:
-        """Fetch listing page (/occasion/...html) and parse seller modal/contact block for telephone links."""
+    def extract_phone_from_detail(self, detail_url: str, session: Optional[Any] = None) -> Optional[str]:
+        """Fetch listing page (/occasion/...html) and parse seller contact details with timeout=5."""
         if not detail_url:
             return None
         try:
-            html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=6, max_retries=1)
+            s = session or self.session
+            html = None
+            if s is not None:
+                try:
+                    resp = s.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=5, verify=False)
+                    if resp.status_code == 200:
+                        html = resp.text
+                except Exception:
+                    html = None
+            if not html:
+                html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=5, max_retries=1)
             if not html:
                 return None
 
@@ -90,16 +115,16 @@ class WandalooScraper(BaseScraper):
                 if phone:
                     return phone
 
-            # 2. Search for WhatsApp links (wa.me)
-            wa_m = re.search(r'wa\.me/(\+?212\d{9}|0[5-7]\d{8}|\d+)', html, re.IGNORECASE)
+            # 2. Search for WhatsApp links (wa.me or api.whatsapp.com)
+            wa_m = re.search(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\+?212\d{9}|0[5-7]\d{8}|\d+)', html, re.IGNORECASE)
             if wa_m:
                 phone = extract_moroccan_phone(wa_m.group(1))
                 if phone:
                     return phone
 
-            # 3. Parse seller modal / contact block (e.g. modal, contact, seller)
+            # 3. Parse seller modal / contact block / phone buttons
             modal_m = re.search(
-                r'<(?:div|span|p|a)[^>]*class=["\'][^"\']*(?:seller-phone|modal-contact|phone|telephone|contact-seller|seller-info)[^"\']*["\'][^>]*>(.*?)</(?:div|span|p|a)>',
+                r'<(?:div|span|p|a|button)[^>]*class=["\'][^"\']*(?:seller-phone|modal-contact|phone|telephone|contact-seller|seller-info|tel-btn|contact-phone)[^"\']*["\'][^>]*>(.*?)</(?:div|span|p|a|button)>',
                 html,
                 re.DOTALL | re.IGNORECASE,
             )
@@ -108,14 +133,21 @@ class WandalooScraper(BaseScraper):
                 if phone:
                     return phone
 
-            # 4. Search for data-phone
-            dp_m = re.search(r'data-phone=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            # 4. Search for data-phone, data-tel, data-contact attribute
+            dp_m = re.search(r'data-(?:phone|tel|contact)=["\']([^"\']+)["\']', html, re.IGNORECASE)
             if dp_m:
                 phone = extract_moroccan_phone(dp_m.group(1))
                 if phone:
                     return phone
 
-            # 5. Scan full detail HTML text container with extract_moroccan_phone
+            # 5. Search script tags / JSON objects
+            script_m = re.search(r'["\']?(?:phone|telephone|tel|contact_phone)["\']?\s*[:=]\s*["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if script_m:
+                phone = extract_moroccan_phone(script_m.group(1))
+                if phone:
+                    return phone
+
+            # 6. Fallback: Scan full detail HTML text container
             return extract_moroccan_phone(html)
         except Exception as e:
             logger.debug("[%s] Detail phone extraction error for %s: %s", self.source_name, detail_url, e)
@@ -191,29 +223,51 @@ class WandalooScraper(BaseScraper):
                 elif "man" in it_lower:
                     transmission = "Manuelle"
 
-        # City
+        # City & Region
         city_m = re.search(r'class=["\']city["\'][^>]*>.*?</i>\s*([^<]+)', block, re.DOTALL)
         city = city_m.group(1).strip() if city_m else ""
+        region = infer_moroccan_region(city)
 
         # Date posted
         date_posted = date_scraped[:10]
 
-        # Brand / Model tokens
+        # Brand, Model & Trim Resolution
         brand = ""
         model = ""
-        if title_raw:
-            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s]', ' ', title_raw).split() if t]
-            if tokens:
-                brand = tokens[0].capitalize()
-                model = " ".join(tokens[1:]).capitalize() if len(tokens) > 1 else ""
-        if not brand or not model:
+        trim = ""
+
+        # Check against KNOWN_BRANDS
+        for b in KNOWN_BRANDS:
+            if re.search(rf"\b{re.escape(b)}\b", title_raw, re.IGNORECASE):
+                brand = b
+                break
+
+        if not brand:
             m_slug = re.search(r'/occasion/([a-zA-Z0-9\-]+)/', url)
             if m_slug:
                 parts = [p for p in m_slug.group(1).split('-') if p and p not in ('occasion', 'maroc')]
-                if parts and not brand:
-                    brand = parts[0].capitalize()
-                if len(parts) > 1 and not model:
-                    model = parts[1].capitalize()
+                if parts:
+                    for b in KNOWN_BRANDS:
+                        if parts[0].lower() == b.lower():
+                            brand = b
+                            break
+
+        if brand:
+            clean_after_brand = re.sub(rf"\b{re.escape(brand)}\b", "", title_raw, flags=re.IGNORECASE).strip()
+            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s\.\-]', ' ', clean_after_brand).split() if t]
+            if tokens:
+                model = tokens[0].capitalize()
+                if len(tokens) > 1:
+                    trim = " ".join(tokens[1:])
+        else:
+            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s\.\-]', ' ', title_raw).split() if t]
+            if tokens:
+                brand = tokens[0].capitalize()
+                if len(tokens) > 1:
+                    model = tokens[1].capitalize()
+                if len(tokens) > 2:
+                    trim = " ".join(tokens[2:])
+
         if not brand:
             brand = "Autre"
         if not model:
@@ -224,7 +278,18 @@ class WandalooScraper(BaseScraper):
         description_raw = desc_m.group(1).strip() if desc_m else ""
         description_raw = re.sub(r'<[^>]+>', '', description_raw).strip()
 
-        # Extract seller phone numbers from contact container, telephone buttons, description, and block
+        # Condition & Customs Status
+        condition = "Occasion"
+        customs_status = "Dédouanée"
+        if "non dédouan" in block.lower() or "non dedouan" in block.lower():
+            customs_status = "Non dédouanée"
+
+        # Seller Type
+        seller_type = "Particulier"
+        if any(k in block.lower() for k in ["pro", "garage", "vitrine", "concession"]):
+            seller_type = "Professionnel"
+
+        # Extract seller phone numbers from card HTML
         seller_phone = None
         tel_m = re.search(r'href=["\']tel:([^"\']+)["\']', block, re.IGNORECASE)
         if tel_m:
@@ -249,11 +314,6 @@ class WandalooScraper(BaseScraper):
         if not seller_phone:
             seller_phone = extract_moroccan_phone(block)
 
-        # Detail-page deep phone extraction for verified listings (valid price, year, and recognized brand)
-        if not seller_phone and url and "/occasion/" in url:
-            if price_mad and year and brand != "Autre":
-                seller_phone = self.extract_phone_from_detail(url)
-
         seller_phone_hash = hash_phone(seller_phone)
 
         raw_record = {
@@ -265,21 +325,21 @@ class WandalooScraper(BaseScraper):
             "title_raw": title_raw,
             "brand": brand,
             "model": model,
-            "trim": "",
+            "trim": trim,
             "year": year,
             "mileage_km": mileage_km,
             "fuel_type": fuel_type,
             "transmission": transmission,
             "fiscal_power_cv": fiscal_cv,
-            "customs_status": "",
-            "condition": "",
+            "customs_status": customs_status,
+            "condition": condition,
             "owners_count": "",
             "doors_count": None,
-            "seller_type": "Particulier",
+            "seller_type": seller_type,
             "seller_phone": seller_phone,
             "seller_phone_hash": seller_phone_hash,
             "city": city,
-            "region": "",
+            "region": region,
             "price_mad": price_mad,
             "photos_count": 1.0,
             "description_raw": description_raw,
@@ -287,7 +347,7 @@ class WandalooScraper(BaseScraper):
         return self.validate_and_format_record(raw_record)
 
     def parse_page(self, html: str, date_scraped: str) -> List[Dict[str, Any]]:
-        """Parse listing cards from Wandaloo HTML."""
+        """Parse listing cards from Wandaloo HTML with concurrent detail phone lookup."""
         records = []
         # Split by listing card containers
         blocks = re.split(r'<li\s+class=["\'](?:even|odd)["\'][^>]*>', html)
@@ -309,6 +369,35 @@ class WandalooScraper(BaseScraper):
                 if rec:
                     records.append(rec)
 
+        # Concurrent detail phone resolution for verified listings missing phone
+        pending_details = [
+            (i, rec["url"])
+            for i, rec in enumerate(records)
+            if not rec.get("seller_phone")
+            and rec.get("url")
+            and "/occasion/" in rec.get("url", "")
+            and rec.get("price_mad")
+            and rec.get("year")
+            and rec.get("brand") != "Autre"
+        ]
+
+        if pending_details:
+            workers = min(8, len(pending_details))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_idx = {
+                    executor.submit(self.extract_phone_from_detail, url): idx
+                    for idx, url in pending_details
+                }
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        phone = future.result()
+                        if phone:
+                            records[idx]["seller_phone"] = phone
+                            records[idx]["seller_phone_hash"] = hash_phone(phone)
+                    except Exception as e:
+                        logger.debug("[%s] Detail async phone lookup error: %s", self.source_name, e)
+
         return records
 
     def scrape_page(self, page_num: int) -> List[Dict[str, Any]]:
@@ -325,8 +414,8 @@ class WandalooScraper(BaseScraper):
         logger.info("[%s] Page %d: parsed %d listings", self.source_name, page_num, len(records))
         return records
 
-    def scrape(self, max_pages: int = 30, **kwargs) -> pd.DataFrame:
-        """Crawl Wandaloo used car listings up to max_pages."""
+    def scrape(self, max_pages: int = 40, **kwargs) -> pd.DataFrame:
+        """Crawl Wandaloo used car listings up to max_pages (default 40)."""
         logger.info("[%s] Starting crawl for up to %d pages ...", self.source_name, max_pages)
         all_records: List[Dict[str, Any]] = []
 
@@ -356,7 +445,7 @@ class WandalooScraper(BaseScraper):
 
 def main():
     parser = argparse.ArgumentParser(description="Wandaloo.com Production Scraper")
-    parser.add_argument("--max-pages", type=int, default=30, help="Max pages to scrape (default: 30)")
+    parser.add_argument("--max-pages", type=int, default=40, help="Max pages to scrape (default: 40)")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
     args = parser.parse_args()
 

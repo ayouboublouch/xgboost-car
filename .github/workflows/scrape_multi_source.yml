@@ -8,7 +8,7 @@ on:
       max_pages:
         description: 'Pages to scrape per source'
         required: false
-        default: '3'
+        default: '50'
 
 permissions:
   contents: write
@@ -18,12 +18,12 @@ jobs:
   scrape:
     name: Scrape ${{ matrix.source }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 2
       matrix:
-        source: [moteur, wandaloo, avito, kifal, siaracash]
+        source: [moteur, wandaloo]
 
     steps:
       - name: Checkout repository
@@ -55,7 +55,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p data/raw
-          python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 3 }}
+          python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 50 }}
 
       - name: Upload Scraped Artifact
         if: always()
@@ -69,7 +69,7 @@ jobs:
     name: Aggregate & Commit Multi-Source Data
     needs: scrape
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: write
       actions: write

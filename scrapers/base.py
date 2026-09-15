@@ -112,6 +112,110 @@ def hash_phone(phone: Optional[str]) -> Optional[str]:
         return None
     return hashlib.sha256(phone.strip().encode("utf-8")).hexdigest()
 
+
+MOROCCAN_CITY_REGIONS: Dict[str, str] = {
+    "casablanca": "Casablanca-Settat",
+    "mohammedia": "Casablanca-Settat",
+    "settat": "Casablanca-Settat",
+    "berrechid": "Casablanca-Settat",
+    "el jadida": "Casablanca-Settat",
+    "bouskoura": "Casablanca-Settat",
+    "nouaceur": "Casablanca-Settat",
+    "tit mellil": "Casablanca-Settat",
+    "mediouna": "Casablanca-Settat",
+    "benslimane": "Casablanca-Settat",
+    "dar bouazza": "Casablanca-Settat",
+    "had soualem": "Casablanca-Settat",
+    "rabat": "Rabat-Salé-Kénitra",
+    "salé": "Rabat-Salé-Kénitra",
+    "sale": "Rabat-Salé-Kénitra",
+    "kénitra": "Rabat-Salé-Kénitra",
+    "kenitra": "Rabat-Salé-Kénitra",
+    "témara": "Rabat-Salé-Kénitra",
+    "temara": "Rabat-Salé-Kénitra",
+    "skhirat": "Rabat-Salé-Kénitra",
+    "khémisset": "Rabat-Salé-Kénitra",
+    "khemisset": "Rabat-Salé-Kénitra",
+    "sidi kacem": "Rabat-Salé-Kénitra",
+    "sidi slimane": "Rabat-Salé-Kénitra",
+    "marrakech": "Marrakech-Safi",
+    "safi": "Marrakech-Safi",
+    "essaouira": "Marrakech-Safi",
+    "el kelaa des sraghna": "Marrakech-Safi",
+    "benguerir": "Marrakech-Safi",
+    "tanger": "Tanger-Tétouan-Al Hoceïma",
+    "tangier": "Tanger-Tétouan-Al Hoceïma",
+    "tétouan": "Tanger-Tétouan-Al Hoceïma",
+    "tetouan": "Tanger-Tétouan-Al Hoceïma",
+    "larache": "Tanger-Tétouan-Al Hoceïma",
+    "al hoceima": "Tanger-Tétouan-Al Hoceïma",
+    "al hoceïma": "Tanger-Tétouan-Al Hoceïma",
+    "chaouen": "Tanger-Tétouan-Al Hoceïma",
+    "chefchaouen": "Tanger-Tétouan-Al Hoceïma",
+    "ksar el kebir": "Tanger-Tétouan-Al Hoceïma",
+    "asilah": "Tanger-Tétouan-Al Hoceïma",
+    "fès": "Fès-Meknès",
+    "fes": "Fès-Meknès",
+    "meknès": "Fès-Meknès",
+    "meknes": "Fès-Meknès",
+    "taza": "Fès-Meknès",
+    "sefrou": "Fès-Meknès",
+    "zouagha": "Fès-Meknès",
+    "agadir": "Souss-Massa",
+    "inezgane": "Souss-Massa",
+    "ait melloul": "Souss-Massa",
+    "taroudant": "Souss-Massa",
+    "tiznit": "Souss-Massa",
+    "oujda": "Oriental",
+    "nador": "Oriental",
+    "berkane": "Oriental",
+    "taourirt": "Oriental",
+    "driouch": "Oriental",
+    "béni mellal": "Béni Mellal-Khénifra",
+    "beni mellal": "Béni Mellal-Khénifra",
+    "khouribga": "Béni Mellal-Khénifra",
+    "khénifra": "Béni Mellal-Khénifra",
+    "khenifra": "Béni Mellal-Khénifra",
+    "fquih ben salah": "Béni Mellal-Khénifra",
+    "ouarzazate": "Drâa-Tafilalet",
+    "errachidia": "Drâa-Tafilalet",
+    "zagora": "Drâa-Tafilalet",
+    "tinghir": "Drâa-Tafilalet",
+    "guelmim": "Guelmim-Oued Noun",
+    "tan-tan": "Guelmim-Oued Noun",
+    "laâyoune": "Laâyoune-Sakia El Hamra",
+    "laayoune": "Laâyoune-Sakia El Hamra",
+    "dakhla": "Dakhla-Oued Ed-Dahab",
+}
+
+
+def infer_moroccan_region(city: Optional[str]) -> str:
+    """Map Moroccan city to official administrative region."""
+    if not city or pd.isna(city):
+        return ""
+    c_lower = str(city).lower().strip()
+    # Direct match
+    if c_lower in MOROCCAN_CITY_REGIONS:
+        return MOROCCAN_CITY_REGIONS[c_lower]
+    # Substring search
+    for k, v in MOROCCAN_CITY_REGIONS.items():
+        if k in c_lower or c_lower in k:
+            return v
+    return ""
+
+
+KNOWN_BRANDS: List[str] = [
+    "Alfa Romeo", "Aston Martin", "Audi", "Bentley", "BMW", "BYD", "Chery", "Chevrolet",
+    "Chrysler", "Citroën", "Citroen", "Cupra", "Dacia", "Daihatsu", "Dodge", "DS", "Ferrari",
+    "Fiat", "Ford", "Geely", "GMC", "Great Wall", "Haval", "Honda", "Hummer",
+    "Hyundai", "Infiniti", "Isuzu", "Iveco", "Jaguar", "Jeep", "Kia", "Lada", "Lamborghini",
+    "Lancia", "Land Rover", "Lexus", "Maserati", "Mahindra", "Mazda", "Mercedes-Benz",
+    "Mercedes", "MG", "Mini", "Mitsubishi", "Nissan", "Opel", "Peugeot", "Porsche",
+    "Range Rover", "Renault", "Rolls-Royce", "Rover", "Saab", "Seat", "Skoda", "Smart",
+    "Ssangyong", "Subaru", "Suzuki", "Tesla", "Toyota", "Volkswagen", "Volvo",
+]
+
+
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -331,6 +435,11 @@ class BaseScraper(abc.ABC):
             else:
                 seller_phone_hash = str(seller_phone_hash).strip()
 
+        city_str = str(raw_record.get("city") or "").strip()
+        region_str = str(raw_record.get("region") or "").strip()
+        if not region_str and city_str:
+            region_str = infer_moroccan_region(city_str)
+
         # Standardize record
         record: Dict[str, Any] = {
             "listing_id": listing_id,
@@ -354,8 +463,8 @@ class BaseScraper(abc.ABC):
             "seller_type": str(raw_record.get("seller_type") or "Particulier").strip(),
             "seller_phone": seller_phone,
             "seller_phone_hash": seller_phone_hash,
-            "city": str(raw_record.get("city") or "").strip(),
-            "region": str(raw_record.get("region") or "").strip(),
+            "city": city_str,
+            "region": region_str,
             "price_mad": self.clean_numeric(raw_record.get("price_mad")),
             "photos_count": self.clean_numeric(raw_record.get("photos_count")) or 0.0,
             "description_raw": str(raw_record.get("description_raw") or "").strip(),

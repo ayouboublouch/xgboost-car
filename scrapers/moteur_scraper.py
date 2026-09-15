@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
@@ -29,9 +30,23 @@ if str(SCRAPERS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRAPERS_DIR))
 
 try:
-    from scrapers.base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
+    from scrapers.base import (
+        BaseScraper,
+        SCHEMA_FIELDS,
+        extract_moroccan_phone,
+        hash_phone,
+        infer_moroccan_region,
+        KNOWN_BRANDS,
+    )
 except ImportError:
-    from base import BaseScraper, SCHEMA_FIELDS, extract_moroccan_phone, hash_phone
+    from base import (
+        BaseScraper,
+        SCHEMA_FIELDS,
+        extract_moroccan_phone,
+        hash_phone,
+        infer_moroccan_region,
+        KNOWN_BRANDS,
+    )
 
 try:
     from bs4 import BeautifulSoup
@@ -76,12 +91,22 @@ class MoteurScraper(BaseScraper):
             max_retries=max_retries,
         )
 
-    def extract_phone_from_detail(self, detail_url: str) -> Optional[str]:
-        """Fetch detail page HTML for verified listing to extract seller telephone."""
+    def extract_phone_from_detail(self, detail_url: str, session: Optional[Any] = None) -> Optional[str]:
+        """Fetch detail page HTML for verified listing to extract seller telephone with timeout=5."""
         if not detail_url:
             return None
         try:
-            html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=6, max_retries=1)
+            s = session or self.session
+            html = None
+            if s is not None:
+                try:
+                    resp = s.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=5, verify=False)
+                    if resp.status_code == 200:
+                        html = resp.text
+                except Exception:
+                    html = None
+            if not html:
+                html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=5, max_retries=1)
             if not html:
                 return None
 
@@ -99,9 +124,9 @@ class MoteurScraper(BaseScraper):
                 if p:
                     return p
 
-            # 3. Search for class="ad-contact-phone", .phone-number, etc.
+            # 3. Search for contact class containers
             pclass_m = re.search(
-                r'class=["\'][^"\']*(?:ad-contact-phone|phone-number|mobile-sticky-phone|contact-phone|seller-phone)[^"\']*["\'][^>]*>(.*?)</',
+                r'class=["\'][^"\']*(?:ad-contact-phone|phone-number|mobile-sticky-phone|contact-phone|seller-phone|btn-phone)[^"\']*["\'][^>]*>(.*?)</',
                 html,
                 re.DOTALL | re.IGNORECASE,
             )
@@ -110,14 +135,21 @@ class MoteurScraper(BaseScraper):
                 if p:
                     return p
 
-            # 4. Search for data-phone attribute
-            dp_m = re.search(r'data-phone=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            # 4. Search for data-phone or data-tel attribute
+            dp_m = re.search(r'data-(?:phone|tel)=["\']([^"\']+)["\']', html, re.IGNORECASE)
             if dp_m:
                 p = extract_moroccan_phone(dp_m.group(1))
                 if p:
                     return p
 
-            # 5. Fallback: Scan full detail HTML text container with extract_moroccan_phone
+            # 5. Search for telephone in script tags or JSON
+            script_m = re.search(r'["\']?(?:phone|telephone|tel|contact_phone)["\']?\s*[:=]\s*["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if script_m:
+                p = extract_moroccan_phone(script_m.group(1))
+                if p:
+                    return p
+
+            # 6. Fallback: Scan full detail HTML text container
             return extract_moroccan_phone(html)
         except Exception as e:
             logger.debug("[%s] Detail phone extraction error for %s: %s", self.source_name, detail_url, e)
@@ -153,22 +185,48 @@ class MoteurScraper(BaseScraper):
         slug_clean = slug_clean.split('?')[0].split('#')[0]
         slug_parts = [p for p in slug_clean.split('-') if p]
 
-        # 2. Brand & Model Resolution
+        # 2. Brand, Model & Trim Resolution
         brand = ""
         model = ""
-        if title_raw:
-            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s]', ' ', title_raw).split() if t]
+        trim = ""
+
+        # Check against KNOWN_BRANDS for precise brand identification
+        for b in KNOWN_BRANDS:
+            if re.search(rf"\b{re.escape(b)}\b", title_raw, re.IGNORECASE):
+                brand = b
+                break
+
+        if not brand and slug_parts:
+            for b in KNOWN_BRANDS:
+                if slug_parts[0].lower() == b.lower() or (
+                    len(slug_parts) > 1 and f"{slug_parts[0]}-{slug_parts[1]}".lower() == b.lower().replace(" ", "-")
+                ):
+                    brand = b
+                    break
+
+        if brand:
+            # Model and trim extraction from title_raw relative to brand
+            clean_after_brand = re.sub(rf"\b{re.escape(brand)}\b", "", title_raw, flags=re.IGNORECASE).strip()
+            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s\.\-]', ' ', clean_after_brand).split() if t]
+            if tokens:
+                model = tokens[0].capitalize()
+                if len(tokens) > 1:
+                    trim = " ".join(tokens[1:])
+            elif slug_parts:
+                model = slug_parts[1].capitalize() if len(slug_parts) > 1 else "Autre"
+                trim = " ".join(slug_parts[2:]) if len(slug_parts) > 2 else ""
+        else:
+            tokens = [t for t in re.sub(r'[^a-zA-Z0-9À-ÿ\s\.\-]', ' ', title_raw).split() if t]
             if tokens:
                 brand = tokens[0].capitalize()
-                model = " ".join(tokens[1:]).capitalize() if len(tokens) > 1 else ""
-
-        # Fallback to slug if title was empty or only provided one token
-        if not brand or not model:
-            if slug_parts:
-                if not brand:
-                    brand = slug_parts[0].capitalize()
-                if not model:
-                    model = " ".join(slug_parts[1:]).capitalize() if len(slug_parts) > 1 else "Autre"
+                if len(tokens) > 1:
+                    model = tokens[1].capitalize()
+                if len(tokens) > 2:
+                    trim = " ".join(tokens[2:])
+            elif slug_parts:
+                brand = slug_parts[0].capitalize()
+                model = slug_parts[1].capitalize() if len(slug_parts) > 1 else "Autre"
+                trim = " ".join(slug_parts[2:]) if len(slug_parts) > 2 else ""
 
         # Never leave brand or model empty
         if not brand:
@@ -177,11 +235,12 @@ class MoteurScraper(BaseScraper):
             model = "Autre"
 
         if not title_raw:
-            title_raw = f"{brand} {model}".strip()
+            title_raw = f"{brand} {model} {trim}".strip()
 
-        # 3. City
+        # 3. City & Region
         city_m = re.search(r'fa-map-marker[^>]*></i>\s*([^\s<]+)', block)
         city = city_m.group(1).strip() if city_m else ""
+        region = infer_moroccan_region(city)
 
         # 4. Date posted
         timeago_m = re.search(r'class=["\']timeago["\']\s+data-time=["\']([^"\']+)["\']', block)
@@ -191,7 +250,7 @@ class MoteurScraper(BaseScraper):
         desc_m = re.search(r'class=["\'][^"\']*ad-desc[^"\']*["\']>\s*(.*?)\s*</p>', block, re.DOTALL | re.IGNORECASE)
         description_raw = desc_m.group(1).strip() if desc_m else ""
 
-        # 6. Price in MAD: Parse numeric from .ad-price-grid or price tag; if 'Appeler' / 'Demande', set NaN
+        # 6. Price in MAD: Parse numeric from .ad-price-grid or price tag
         price_m = re.search(r'class=["\'][^"\']*(?:ad-price-grid|price|prix)[^"\']*["\'][^>]*>\s*(.*?)\s*</', block, re.DOTALL | re.IGNORECASE)
         price_raw = price_m.group(1).strip() if price_m else ""
         price_mad = None
@@ -211,7 +270,7 @@ class MoteurScraper(BaseScraper):
                 except ValueError:
                     price_mad = None
 
-        # 7. Year: Parse 4-digit integer (2000-2026) from <span title="Année"> or .fa-calendar
+        # 7. Year: Parse 4-digit integer (1980-2027)
         year = None
         year_m = re.search(r'(?:title=["\'](?:Année|Annee)["\'][^>]*>|fa-calendar[^>]*></i>)\s*(\d{4})', block, re.IGNORECASE)
         if year_m:
@@ -245,7 +304,7 @@ class MoteurScraper(BaseScraper):
         elif "elect" in fuel_raw or "élect" in fuel_raw:
             fuel_type = "Electrique"
 
-        # 10. Mileage km: Parse digits before 'km' from .fa-road or card text
+        # 10. Mileage km: Parse digits before 'km'
         mileage_km = None
         km_m = re.search(r'fa-road[^>]*></i>\s*(\d[\d\s,.]*)', block, re.IGNORECASE)
         if km_m:
@@ -261,7 +320,35 @@ class MoteurScraper(BaseScraper):
                 except ValueError:
                     mileage_km = None
 
-        # 11. Extract seller phone numbers from tel: links, data-phone, description, and title
+        # 11. Fiscal Power (CV)
+        fiscal_cv = ""
+        cv_m = re.search(r'(?:fa-flash|fa-bolt|puissance)[^>]*></i>\s*(\d{1,2})', block, re.IGNORECASE)
+        if not cv_m:
+            cv_m = re.search(r'\b(\d{1,2})\s*(?:CV|cv|ch)\b', block)
+        if cv_m:
+            fiscal_cv = cv_m.group(1)
+
+        # 12. Condition & Customs Status
+        condition = "Occasion"
+        customs_status = "Dédouanée"
+        if "non dédouan" in block.lower() or "non dedouan" in block.lower():
+            customs_status = "Non dédouanée"
+
+        # 13. Seller Type
+        seller_type = "Particulier"
+        if any(k in block.lower() for k in ["professionnel", "garage", "vitrine", "concession", "ad-pro"]):
+            seller_type = "Professionnel"
+
+        # 14. Photos Count
+        photos_count = 1.0
+        p_count_m = re.search(r'fa-camera[^>]*></i>\s*(\d+)', block)
+        if p_count_m:
+            try:
+                photos_count = float(p_count_m.group(1))
+            except ValueError:
+                photos_count = 1.0
+
+        # 15. Extract seller phone numbers from card HTML
         seller_phone = None
         tel_m = re.search(r'href=["\']tel:([^"\']+)["\']', block, re.IGNORECASE)
         if tel_m:
@@ -281,11 +368,6 @@ class MoteurScraper(BaseScraper):
         if not seller_phone:
             seller_phone = extract_moroccan_phone(block)
 
-        # Detail-page deep phone extraction for verified listings (valid price, year, and recognized brand)
-        if not seller_phone and full_url and "detail-annonce" in full_url:
-            if price_mad and year and brand != "Autre":
-                seller_phone = self.extract_phone_from_detail(full_url)
-
         seller_phone_hash = hash_phone(seller_phone)
 
         raw_record = {
@@ -297,31 +379,31 @@ class MoteurScraper(BaseScraper):
             "title_raw": title_raw,
             "brand": brand,
             "model": model,
-            "trim": "",
+            "trim": trim,
             "year": year,
             "mileage_km": mileage_km,
             "fuel_type": fuel_type,
             "transmission": transmission,
-            "fiscal_power_cv": "",
-            "customs_status": "",
-            "condition": "",
+            "fiscal_power_cv": fiscal_cv,
+            "customs_status": customs_status,
+            "condition": condition,
             "owners_count": "",
             "doors_count": None,
-            "seller_type": "Particulier",
+            "seller_type": seller_type,
             "seller_phone": seller_phone,
             "seller_phone_hash": seller_phone_hash,
             "city": city,
-            "region": "",
+            "region": region,
             "price_mad": price_mad,
-            "photos_count": 1.0,
+            "photos_count": photos_count,
             "description_raw": description_raw,
         }
         return self.validate_and_format_record(raw_record)
 
     def parse_page(self, html: str, date_scraped: str) -> List[Dict[str, Any]]:
-        """Parse all listing cards from a catalog page HTML."""
+        """Parse all listing cards from a catalog page HTML with concurrent detail phone resolution."""
         records = []
-        
+
         # Split by distinct ad card containers
         card_blocks = re.split(r'<div class=["\']ad-col col-12["\']', html)
         if len(card_blocks) <= 1:
@@ -345,6 +427,35 @@ class MoteurScraper(BaseScraper):
                 rec = self.parse_card_regex(str(card), date_scraped)
                 if rec:
                     records.append(rec)
+
+        # High-performance concurrent detail phone extraction for listings needing deep phone lookup
+        pending_details = [
+            (i, rec["url"])
+            for i, rec in enumerate(records)
+            if not rec.get("seller_phone")
+            and rec.get("url")
+            and "detail-annonce" in rec.get("url", "")
+            and rec.get("price_mad")
+            and rec.get("year")
+            and rec.get("brand") != "Autre"
+        ]
+
+        if pending_details:
+            workers = min(8, len(pending_details))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                future_to_idx = {
+                    executor.submit(self.extract_phone_from_detail, url): idx
+                    for idx, url in pending_details
+                }
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        phone = future.result()
+                        if phone:
+                            records[idx]["seller_phone"] = phone
+                            records[idx]["seller_phone_hash"] = hash_phone(phone)
+                    except Exception as e:
+                        logger.debug("[%s] Detail async phone lookup error: %s", self.source_name, e)
 
         return records
 
@@ -372,8 +483,8 @@ class MoteurScraper(BaseScraper):
 
     def scrape(self, max_pages: int = 60, **kwargs) -> pd.DataFrame:
         """
-        Scrapes the first 50 to 80 pages (yielding ~1,000+ real records in under 5 minutes).
-        Gracefully falls back to baseline seed dataset if datacenter IP challenge prevents scraping.
+        Scrapes up to max_pages (default 60, yielding ~1,800 records).
+        Gracefully halts if consecutive empty pages are encountered.
         """
         logger.info("[%s] Starting production crawl for up to %d pages ...", self.source_name, max_pages)
         all_records: List[Dict[str, Any]] = []
@@ -404,7 +515,7 @@ class MoteurScraper(BaseScraper):
 
 def main():
     parser = argparse.ArgumentParser(description="Moteur.ma Production Scraper")
-    parser.add_argument("--max-pages", type=int, default=30, help="Max pages to scrape (default: 30)")
+    parser.add_argument("--max-pages", type=int, default=60, help="Max pages to scrape (default: 60)")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
     args = parser.parse_args()
 
