@@ -9,6 +9,10 @@ on:
       - 'data/raw/**'
       - 'src/**'
 
+concurrency:
+  group: train-model
+  cancel-in-progress: false
+
 permissions:
   contents: write
 

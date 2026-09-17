@@ -592,6 +592,17 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Detect Cross-Source Matches & Construct unified leakage_group_id
     df = compute_cross_source_matches(df)
 
+    # Strip multiline breaks and tabs in textual fields
+    for col in ["description_raw", "title_raw", "model"]:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace(r"[\r\n\t]+", " ", regex=True)
+                .str.strip()
+            )
+            df.loc[df[col].isin(["nan", "None", "", "<NA>"]), col] = None
+
     # Harden all object columns for Parquet / PyArrow schema compatibility
     for col in df.columns:
         if df[col].dtype == "object":
@@ -617,6 +628,17 @@ def main():
     logger.info("Starting Multi-Source Cleaning from %s ...", raw_dir)
     df_raw = load_raw_datasets(raw_dir)
     df_cleaned = clean_dataframe(df_raw)
+
+    # Strip multiline breaks in textual fields before export
+    for col in ["description_raw", "title_raw", "model"]:
+        if col in df_cleaned.columns:
+            df_cleaned[col] = (
+                df_cleaned[col]
+                .astype(str)
+                .str.replace(r"[\r\n\t]+", " ", regex=True)
+                .str.strip()
+            )
+            df_cleaned.loc[df_cleaned[col].isin(["nan", "None", "", "<NA>"]), col] = None
 
     out_parquet = output_dir / "cleaned_cars.parquet"
     out_csv = output_dir / "cleaned_cars.csv"

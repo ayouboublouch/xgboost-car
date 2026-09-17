@@ -187,64 +187,78 @@ def flush_checkpoint(
 
 def update_master_database(raw_dir: Path) -> Path:
     """
-    Merge all raw scraped files (scraped_combined_*.csv, scraped_continuous_*.csv)
+    Merge all raw scraped files (scraped_combined_*.csv, scraped_continuous_*.csv, avito_local_*.csv)
     into data/raw/scraped_master_database.parquet with listing_id deduplication.
+    Excludes scraped_master_database.parquet itself to avoid recursive empty self-reads.
     """
     raw_dir = Path(raw_dir)
     master_parquet = raw_dir / "scraped_master_database.parquet"
-    frames = []
+    dfs = []
 
-    # Read existing master if available
-    if master_parquet.exists():
-        try:
-            df_m = pd.read_parquet(master_parquet)
-            if not df_m.empty and len(df_m) > 0:
-                frames.append(df_m)
-                logger.info("Loaded %d records from existing master parquet", len(df_m))
-        except Exception as e:
-            logger.warning("Could not read existing master parquet: %s", e)
+    # Match all scraped_combined_*.csv, scraped_continuous_*.csv, and avito_local_*.csv
+    candidate_files = (
+        sorted(list(raw_dir.glob("scraped_combined_*.csv")))
+        + sorted(list(raw_dir.glob("scraped_continuous_*.csv")))
+        + sorted(list(raw_dir.glob("avito_local_*.csv")))
+    )
 
-    # Load all raw CSV batches
-    for f in sorted(raw_dir.glob("scraped_*.csv")):
+    for f in candidate_files:
         try:
-            df_c = pd.read_csv(f, low_memory=False, dtype={"seller_phone": str, "listing_id": str})
+            if f.stat().st_size <= 500:
+                logger.info("Skipping small/empty raw file: %s", f.name)
+                continue
+            df_c = pd.read_csv(f, low_memory=False, on_bad_lines="skip", dtype={"listing_id": str})
             if not df_c.empty and len(df_c) > 0:
-                frames.append(df_c)
+                dfs.append(df_c)
+                logger.info("Loaded %d records from %s", len(df_c), f.name)
         except Exception as e:
             logger.warning("Could not read %s: %s", f.name, e)
 
-    if not frames:
+    if not dfs:
         logger.warning("No scraped data found to build master database.")
         return master_parquet
 
-    merged = pd.concat(frames, ignore_index=True)
+    master_df = pd.concat(dfs, ignore_index=True)
 
     # Deduplicate strictly on listing_id, keeping the latest record
-    if "listing_id" in merged.columns:
-        merged["listing_id"] = merged["listing_id"].astype(str).str.strip()
-        merged = merged.drop_duplicates(subset=["listing_id"], keep="last")
+    if "listing_id" in master_df.columns:
+        master_df["listing_id"] = master_df["listing_id"].astype(str).str.strip()
+        master_df = master_df.drop_duplicates(subset=["listing_id"], keep="last")
     else:
-        merged = merged.drop_duplicates()
+        master_df = master_df.drop_duplicates()
+
+    # Assert non-empty before saving
+    assert len(master_df) > 0, "Master database DataFrame is empty after deduplication"
 
     # Enforce schema fields
     for col in SCHEMA_FIELDS:
-        if col not in merged.columns:
-            merged[col] = None
-    merged = merged[SCHEMA_FIELDS].copy()
+        if col not in master_df.columns:
+            master_df[col] = None
+    master_df = master_df[SCHEMA_FIELDS].copy()
 
     # Sanitize multiline strings and enforce string types for Parquet serialization
-    for col in merged.columns:
-        if merged[col].dtype == "object":
-            merged[col] = merged[col].apply(
+    for col in ["description_raw", "title_raw", "model"]:
+        if col in master_df.columns:
+            master_df[col] = (
+                master_df[col]
+                .astype(str)
+                .str.replace(r"[\r\n\t]+", " ", regex=True)
+                .str.strip()
+            )
+            master_df.loc[master_df[col].isin(["nan", "None", "", "<NA>"]), col] = None
+
+    for col in master_df.columns:
+        if master_df[col].dtype == "object":
+            master_df[col] = master_df[col].apply(
                 lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != "" and str(x).lower() not in ("nan", "none", "<na>") else None
             )
 
     try:
-        merged.to_parquet(master_parquet, index=False, engine="pyarrow")
+        master_df.to_parquet(master_parquet, index=False, engine="pyarrow", compression="snappy")
         logger.info(
             "Master database updated successfully: %s (%d unique listings)",
             master_parquet.name,
-            len(merged),
+            len(master_df),
         )
     except Exception as e:
         logger.error("Failed to write master database parquet: %s", e)
