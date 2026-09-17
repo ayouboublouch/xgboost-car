@@ -165,10 +165,11 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
     temp_brand = df["brand"].fillna("").astype(str).str.lower().str.strip().values
     temp_model = df["model"].fillna("").astype(str).str.lower().str.strip().values
     temp_year = df["year"].fillna(-1).astype(float).values
-    temp_mileage = df["mileage_km"].values
-    temp_price = df["price_mad"].values
-    temp_source = df["source"].fillna("").astype(str).values
-    row_ids = df["listing_id"].astype(str).values
+    temp_mileage = df["mileage_km"].values if "mileage_km" in df.columns else np.full(n, np.nan)
+    temp_price = df["price_mad"].values if "price_mad" in df.columns else np.full(n, np.nan)
+    temp_source = df["source"].fillna("").astype(str).values if "source" in df.columns else np.full(n, "")
+    temp_lids = df["listing_id"].fillna("").astype(str).values if "listing_id" in df.columns else np.full(n, "")
+    row_ids = [f"{src}_{lid}_{idx}" for idx, (src, lid) in enumerate(zip(temp_source, temp_lids))]
 
     # Group candidate indices
     groups: Dict[Tuple[str, str, float], List[int]] = {}
@@ -240,7 +241,7 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
     df["cross_source_match_id"] = csm_ids
 
     # Unify with repost_group_id into leakage_group_id
-    repost_ids = df["repost_group_id"].values
+    repost_ids = df["repost_group_id"].values if "repost_group_id" in df.columns else [f"repost_{idx}" for idx in range(n)]
     for idx in range(n):
         l_id = row_ids[idx]
         r_id = str(repost_ids[idx])
@@ -267,8 +268,15 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
 def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
     """Scan and merge all raw parquet and csv datasets in data/raw, guaranteeing seed dataset inclusion."""
     # First purge empty/dummy files and consolidate any daily batches
-    purge_empty_raw_files(raw_dir)
-    consolidate_daily_scrapes(raw_dir)
+    try:
+        purge_empty_raw_files(raw_dir)
+    except Exception as e:
+        logger.warning("purge_empty_raw_files notice: %s", e)
+
+    try:
+        consolidate_daily_scrapes(raw_dir)
+    except Exception as e:
+        logger.warning("consolidate_daily_scrapes notice: %s", e)
 
     frames = []
     loaded_stems = set()
@@ -290,22 +298,26 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
     for pf in parquet_files:
         try:
             df_p = pd.read_parquet(pf)
-            if not df_p.empty and len(df_p) > 0:
+            if df_p is not None and not df_p.empty and len(df_p) > 0:
+                if "brand" not in df_p.columns or "price_mad" not in df_p.columns:
+                    logger.warning("Skipping %s: missing 'brand' or 'price_mad' column", pf.name)
+                    continue
                 valid_mask = (
                     df_p["brand"].notna()
                     & (df_p["brand"].astype(str).str.strip() != "")
                     & (df_p["brand"].astype(str).str.lower() != "nan")
                     & df_p["price_mad"].notna()
+                    & (pd.to_numeric(df_p["price_mad"], errors="coerce") > 0)
                 )
-                valid_rows = df_p[valid_mask]
+                valid_rows = df_p[valid_mask].copy()
                 if len(valid_rows) > 0:
                     logger.info("Loaded %d valid scraped rows from %s", len(valid_rows), pf.name)
                     scraped_frames.append(valid_rows)
                     loaded_stems.add(pf.stem)
                 else:
-                    logger.warning("Skipping corrupted file %s (0 rows with valid brand and price)", pf.name)
+                    logger.warning("Skipping file %s (0 rows with valid brand and price)", pf.name)
         except Exception as e:
-            logger.warning("Could not read %s: %s", pf.name, e)
+            logger.warning("Could not read parquet %s: %s", pf.name, e)
 
     csv_files = sorted(list(raw_dir.glob("*.csv")))
     for cf in csv_files:
@@ -313,21 +325,26 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
             continue
         try:
             df_c = pd.read_csv(cf, low_memory=False)
-            if not df_c.empty and len(df_c) > 0:
+            if df_c is not None and not df_c.empty and len(df_c) > 0:
+                if "brand" not in df_c.columns or "price_mad" not in df_c.columns:
+                    logger.warning("Skipping %s: missing 'brand' or 'price_mad' column", cf.name)
+                    continue
                 valid_mask = (
                     df_c["brand"].notna()
                     & (df_c["brand"].astype(str).str.strip() != "")
                     & (df_c["brand"].astype(str).str.lower() != "nan")
                     & df_c["price_mad"].notna()
+                    & (pd.to_numeric(df_c["price_mad"], errors="coerce") > 0)
                 )
-                valid_rows = df_c[valid_mask]
+                valid_rows = df_c[valid_mask].copy()
                 if len(valid_rows) > 0:
                     logger.info("Loaded %d valid scraped rows from %s", len(valid_rows), cf.name)
                     scraped_frames.append(valid_rows)
+                    loaded_stems.add(cf.stem)
                 else:
-                    logger.warning("Skipping corrupted file %s (0 rows with valid brand and price)", cf.name)
+                    logger.warning("Skipping file %s (0 rows with valid brand and price)", cf.name)
         except Exception as e:
-            logger.warning("Could not read %s: %s", cf.name, e)
+            logger.warning("Could not read csv %s: %s", cf.name, e)
 
     if scraped_frames:
         frames.extend(scraped_frames)
@@ -344,13 +361,20 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Execute validation, outlier marking, type casting, deduplication, and cross-source matching."""
+    if df is None or df.empty:
+        raise ValueError("Cannot clean empty DataFrame")
+
     # Filter out corrupted rows: immediately drop any row where brand, model, price_mad, or year is NaN or empty string
     for c in ["brand", "model"]:
         if c in df.columns:
             df[c] = df[c].fillna("").astype(str).str.strip()
+        else:
+            df[c] = ""
     for c in ["price_mad", "year"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+        else:
+            df[c] = np.nan
 
     corrupted_mask = (
         (df["brand"] == "")
@@ -373,14 +397,37 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     # Deduplicate primarily on (source, listing_id) or url
     if "listing_id" in df.columns and "source" in df.columns:
-        df["listing_id"] = df["listing_id"].astype(str)
-        df = df.drop_duplicates(subset=["source", "listing_id"], keep="last")
+        valid_id_mask = (
+            df["listing_id"].notna()
+            & (df["listing_id"].astype(str).str.strip() != "")
+            & (df["listing_id"].astype(str).str.lower() != "nan")
+            & df["source"].notna()
+        )
+        if valid_id_mask.any():
+            dedup_part = df[valid_id_mask].drop_duplicates(subset=["source", "listing_id"], keep="last")
+            keep_part = df[~valid_id_mask]
+            df = pd.concat([dedup_part, keep_part], ignore_index=True)
     elif "listing_id" in df.columns:
-        df["listing_id"] = df["listing_id"].astype(str)
-        df = df.drop_duplicates(subset=["listing_id"], keep="last")
+        valid_id_mask = (
+            df["listing_id"].notna()
+            & (df["listing_id"].astype(str).str.strip() != "")
+            & (df["listing_id"].astype(str).str.lower() != "nan")
+        )
+        if valid_id_mask.any():
+            dedup_part = df[valid_id_mask].drop_duplicates(subset=["listing_id"], keep="last")
+            keep_part = df[~valid_id_mask]
+            df = pd.concat([dedup_part, keep_part], ignore_index=True)
 
     if "url" in df.columns:
-        df = df.drop_duplicates(subset=["url"], keep="last")
+        valid_url_mask = (
+            df["url"].notna()
+            & (df["url"].astype(str).str.strip() != "")
+            & (df["url"].astype(str).str.lower() != "nan")
+        )
+        if valid_url_mask.any():
+            dedup_part = df[valid_url_mask].drop_duplicates(subset=["url"], keep="last")
+            keep_part = df[~valid_url_mask]
+            df = pd.concat([dedup_part, keep_part], ignore_index=True)
 
     logger.info("Rows after within-source deduplication: %d", len(df))
 

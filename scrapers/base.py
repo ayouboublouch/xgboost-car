@@ -408,6 +408,8 @@ def clean_brand_and_model(
         m_final = "Autre"
 
     m_final = m_final.title() if m_final.islower() else m_final
+    if not tr_str or tr_str.lower() in ("nan", "none", ""):
+        tr_str = ""
 
     return b_clean, m_final, tr_str
 
@@ -906,7 +908,7 @@ def consolidate_daily_scrapes(
         out_csv = raw_dir / f"scraped_combined_{d}.csv"
         out_parquet = raw_dir / f"scraped_combined_{d}.parquet"
 
-        if not matching_csvs and not out_csv.exists():
+        if not matching_csvs:
             continue
 
         frames = []
