@@ -167,6 +167,9 @@ class WandalooScraper(BaseScraper):
             url = link_m.group(1)
             listing_id = link_m.group(2)
 
+        if listing_id in self.seen_ids:
+            return None
+
         # Title
         title_m = re.search(r'class=["\']titre["\']>\s*<a[^>]*>(.*?)</a>', block, re.DOTALL)
         if not title_m:

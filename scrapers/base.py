@@ -420,6 +420,66 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:124.0) Gecko/20100101 Firefox/124.0",
 ]
 
+TRACKING_DIR = Path("data/tracking")
+SEEN_IDS_FILE = TRACKING_DIR / "seen_listing_ids.txt"
+
+
+def load_seen_listing_ids(filepath: Optional[Path] = None) -> Set[str]:
+    """Load persistent set of previously seen listing IDs from disk."""
+    path = Path(filepath or SEEN_IDS_FILE)
+    if not path.exists():
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return {line.strip() for line in f if line.strip()}
+    except Exception as e:
+        logger.warning("Could not read seen listing IDs from %s: %s", path, e)
+        return set()
+
+
+def append_seen_listing_ids(new_ids: Any, filepath: Optional[Path] = None) -> None:
+    """Atomically append new listing IDs to persistent disk register."""
+    if not new_ids:
+        return
+    path = Path(filepath or SEEN_IDS_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            for lid in new_ids:
+                s = str(lid).strip()
+                if s and s.lower() not in ("nan", "none"):
+                    f.write(f"{s}\n")
+    except Exception as e:
+        logger.warning("Could not append seen listing IDs to %s: %s", path, e)
+
+
+def init_seen_listing_ids(raw_dir: Path, filepath: Optional[Path] = None) -> Set[str]:
+    """Scan all CSV files in raw_dir to initialize or backfill persistent seen IDs."""
+    raw_dir = Path(raw_dir)
+    seen_ids = set()
+    if raw_dir.exists():
+        for f in raw_dir.glob("*.csv"):
+            if f.name == "used_car_training_combined.csv":
+                continue
+            try:
+                df = pd.read_csv(f, low_memory=False, dtype={"listing_id": str})
+                if "listing_id" in df.columns:
+                    for lid in df["listing_id"].dropna():
+                        s = str(lid).strip()
+                        if s and s.lower() not in ("nan", "none", ""):
+                            seen_ids.add(s)
+            except Exception:
+                pass
+    path = Path(filepath or SEEN_IDS_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            for lid in sorted(seen_ids):
+                f.write(f"{lid}\n")
+    except Exception as e:
+        logger.warning("Could not write initialized seen listing IDs: %s", e)
+    return seen_ids
+
 
 class BaseScraper(abc.ABC):
     """Abstract Base Class for all Moroccan car platform scrapers."""
@@ -438,7 +498,7 @@ class BaseScraper(abc.ABC):
         self.delay_min = delay_min
         self.delay_max = delay_max
         self.max_retries = max_retries
-        self.seen_ids: Set[str] = set()
+        self.seen_ids: Set[str] = load_seen_listing_ids()
         self.session = self._init_session()
 
     def _init_session(self):
@@ -745,6 +805,12 @@ class BaseScraper(abc.ABC):
         except Exception as e:
             logger.error("[%s] Failed to save CSV: %s", self.source_name, e)
 
+        # Update persistent seen IDs register
+        if "listing_id" in df.columns:
+            new_lids = [str(x).strip() for x in df["listing_id"].dropna() if str(x).strip()]
+            append_seen_listing_ids(new_lids)
+            self.seen_ids.update(new_lids)
+
 
 def purge_empty_raw_files(raw_dir: Path) -> List[str]:
     """
@@ -952,6 +1018,11 @@ def consolidate_daily_scrapes(
             merged_df.to_parquet(out_parquet, index=False, engine="pyarrow")
         except Exception:
             pass
+
+        # Update persistent seen IDs register
+        if "listing_id" in merged_df.columns:
+            new_lids = [str(x).strip() for x in merged_df["listing_id"].dropna() if str(x).strip()]
+            append_seen_listing_ids(new_lids)
 
         logger.info(
             "Consolidated %d batches for %s into %s (%d records)",

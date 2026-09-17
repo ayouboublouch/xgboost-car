@@ -1,0 +1,72 @@
+name: 24/7 Continuous Car Harvester
+
+on:
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: 'Duration in hours for continuous harvesting'
+        required: false
+        default: '5.0'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  continuous-harvest:
+    name: Continuous 5-Hour Harvester
+    runs-on: ubuntu-latest
+    timeout-minutes: 320
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'scrapers/requirements_scraper.txt'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev build-essential
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scrapers/requirements_scraper.txt || pip install requests beautifulsoup4 lxml pandas pyarrow fake-useragent
+
+      - name: Environment Diagnostics
+        run: |
+          python -c "import sys; print('Python version:', sys.version)"
+          python scrapers/continuous_harvester.py --help || true
+
+      - name: Run 5-Hour Continuous Harvester
+        run: |
+          mkdir -p data/raw data/tracking
+          python scrapers/continuous_harvester.py --duration-hours ${{ github.event.inputs.duration_hours || '5.0' }}
+
+      - name: Consolidate Master Database Parquet
+        run: |
+          python -c "from scrapers.continuous_harvester import update_master_database; from pathlib import Path; update_master_database(Path('data/raw'))"
+
+      - name: Commit and push continuous harvest data
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git status
+          git add data/raw/scraped_continuous_* data/raw/scraped_master_database.parquet data/tracking/seen_listing_ids.txt || true
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(data): ingest continuous 24/7 car listings [skip ci]"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "No new continuous raw data detected to commit."
+          fi

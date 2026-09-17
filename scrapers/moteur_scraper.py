@@ -163,6 +163,8 @@ class MoteurScraper(BaseScraper):
 
         href = link_m.group(1)
         listing_id = link_m.group(2)
+        if listing_id in self.seen_ids:
+            return None
         slug = link_m.group(3) or ""
         full_url = urljoin("https://www.moteur.ma", href)
 
