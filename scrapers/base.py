@@ -18,7 +18,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 USE_CURL_CFFI = False
 requests = None
@@ -85,7 +85,13 @@ def extract_moroccan_phone(text: Any) -> Optional[str]:
     """
     if text is None or pd.isna(text):
         return None
-    s = str(text)
+    s = str(text).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    # If 9 digits starting with 5, 6, 7 (e.g. from float representation), prepend 0
+    if len(s) == 9 and s[0] in "567" and s.isdigit():
+        s = "0" + s
+
     pattern = r"(?:(?:\+|00)212|0)\s*[5-7](?:[\s\.-]*\d{2}){4}"
     match = re.search(pattern, s)
     if not match:
@@ -214,6 +220,196 @@ KNOWN_BRANDS: List[str] = [
     "Range Rover", "Renault", "Rolls-Royce", "Rover", "Saab", "Seat", "Skoda", "Smart",
     "Ssangyong", "Subaru", "Suzuki", "Tesla", "Toyota", "Volkswagen", "Volvo",
 ]
+
+BRAND_TYPO_MAP: Dict[str, str] = {
+    "peugeut": "Peugeot",
+    "peugot": "Peugeot",
+    "peugeot": "Peugeot",
+    "porch": "Porsche",
+    "porsche": "Porsche",
+    "renoult": "Renault",
+    "renault": "Renault",
+    "volswagen": "Volkswagen",
+    "vw": "Volkswagen",
+    "volkswagen": "Volkswagen",
+    "hyandai": "Hyundai",
+    "hyanday": "Hyundai",
+    "hyndai": "Hyundai",
+    "hyondai": "Hyundai",
+    "hyundai": "Hyundai",
+    "mercedes": "Mercedes-Benz",
+    "mercedes-benz": "Mercedes-Benz",
+    "mercides": "Mercedes-Benz",
+    "benz": "Mercedes-Benz",
+    "maseratti": "Maserati",
+    "maserati": "Maserati",
+    "mitusubshi": "Mitsubishi",
+    "mitsubishi": "Mitsubishi",
+    "bently": "Bentley",
+    "bentley": "Bentley",
+    "bmw": "BMW",
+    "bwm": "BMW",
+    "bm": "BMW",
+    "geep": "Jeep",
+    "jeep": "Jeep",
+    "cetroen": "Citroën",
+    "citroen": "Citroën",
+    "citroën": "Citroën",
+    "alfa": "Alfa Romeo",
+    "alfa romeo": "Alfa Romeo",
+    "land": "Land Rover",
+    "land rover": "Land Rover",
+    "range": "Land Rover",
+    "range rover": "Land Rover",
+    "rover": "Land Rover",
+    "skoda": "Skoda",
+    "koda": "Skoda",
+    "dacia": "Dacia",
+    "audi": "Audi",
+    "audia3": "Audi",
+    "fiat": "Fiat",
+    "fiát": "Fiat",
+    "fiât": "Fiat",
+    "ford": "Ford",
+    "nissan": "Nissan",
+    "toyota": "Toyota",
+    "kia": "Kia",
+    "seat": "Seat",
+    "opel": "Opel",
+    "suzuki": "Suzuki",
+    "chevrolet": "Chevrolet",
+    "honda": "Honda",
+    "jaguar": "Jaguar",
+    "cupra": "Cupra",
+    "ds": "DS",
+    "byd": "BYD",
+    "geely": "Geely",
+    "chery": "Chery",
+    "haval": "Haval",
+    "mg": "MG",
+}
+
+STOP_WORDS_MODEL: Set[str] = {
+    "diesel", "essence", "hybride", "hybrid", "hybri", "electrique", "électrique", "electriq", "gpl",
+    "manuelle", "manuel", "automatique", "auto", "bva", "bvm",
+    "à", "au", "en", "pour", "sur", "avec", "sans",
+    "vendre", "vente",
+    "presque", "neuf", "neuve", "etat", "état", "très", "tres", "bon", "bonne", "occasion",
+    "peinture", "peintures", "origine",
+    "premier", "premiere", "première", "1ere", "1ère", "1er", "main",
+    "diw", "dedouane", "dédouané", "dédouanée", "dedouanee", "douane",
+    "import", "importe", "importé", "importee", "importée", "allemagne", "france",
+    "modèle", "modele", "model",
+    "derkaoui", "l3amra", "khawya",
+    "options", "option", "tt", "toutes", "toute", "tout", "full",
+    "maroc", "ww", "www",
+    "km",
+    "gtline", "gt-line", "sline", "s-line", "rline", "r-line", "amg-line",
+    "allure", "business", "active", "feel", "shine", "intens", "zen", "confort", "titanium",
+    "luxe", "exclusive", "prestige",
+}
+
+
+def clean_brand_and_model(
+    brand: Optional[str],
+    model: Optional[str],
+    title_raw: Optional[str] = "",
+    trim: Optional[str] = "",
+) -> Tuple[str, str, str]:
+    """
+    Harmonize brand typos (e.g. 'Peugeut' -> 'Peugeot') and strip title noise
+    (transmission, fuel, city, year, sale phrases) from model tokens.
+    """
+    b_str = str(brand or "").strip()
+    m_str = str(model or "").strip()
+    t_str = str(title_raw or "").strip()
+    tr_str = str(trim or "").strip()
+
+    # 1. Harmonize brand typos
+    b_lower = b_str.lower()
+    b_clean = BRAND_TYPO_MAP.get(b_lower, b_str)
+    if not b_clean or b_clean.lower() in ("nan", "none", ""):
+        b_clean = "Autre"
+
+    # If brand itself is still unknown or Autre, try detecting from title_raw
+    if b_clean == "Autre" and t_str:
+        for typo, canonical in BRAND_TYPO_MAP.items():
+            if re.search(rf"\b{re.escape(typo)}\b", t_str, re.IGNORECASE):
+                b_clean = canonical
+                break
+
+    # 2. Check if model is the brand name or brand typo (e.g. model="Peugeut", brand="Peugeot")
+    if (
+        m_str.lower() in ("peugeut", "peugot", "peugeot")
+        or m_str.lower() == b_clean.lower()
+        or m_str.lower() in BRAND_TYPO_MAP
+    ):
+        # Recover real model from trim or title_raw
+        if tr_str and tr_str.lower() not in ("nan", "none", ""):
+            tr_tokens = tr_str.split()
+            m_str = tr_tokens[0]
+            tr_str = " ".join(tr_tokens[1:])
+        elif t_str:
+            t_clean = re.sub(
+                rf"\b({re.escape(b_clean)}|peugeut|peugot|mercedes|benz|audi|bmw|renault|dacia|volkswagen|vw)\b",
+                " ",
+                t_str,
+                flags=re.IGNORECASE,
+            )
+            t_tokens = [tok for tok in t_clean.split() if tok]
+            if t_tokens:
+                m_str = t_tokens[0]
+                if len(t_tokens) > 1 and not tr_str:
+                    tr_str = " ".join(t_tokens[1:])
+
+    # 3. Strip title noise from model tokens
+    s = re.sub(r"[\(\)\[\],;\*\?!\"/\\\|]", " ", m_str)
+    s = re.sub(r"\s+", " ", s).strip()
+    tokens = s.split()
+
+    kept_tokens = []
+    for i, tok in enumerate(tokens):
+        tok_lower = tok.lower().strip()
+        # 4-digit year check (allow Peugeot 2008, 3008, 5008 as first token)
+        if re.match(r"^(19\d\d|20\d\d)$", tok_lower):
+            if i == 0 and tok_lower in ("2008", "3008", "5008") and b_clean.lower() == "peugeot":
+                kept_tokens.append(tok)
+                continue
+            else:
+                break
+
+        # Engine specs & power
+        if re.match(r"^\d+[\.,]\d+$", tok_lower) or re.match(r"^\d+(cv|ch|eat\d*)$", tok_lower):
+            break
+        if tok_lower in ("hdi", "dci", "tdi", "cdi", "crdi", "tfsi", "tsi", "cv", "ch", "eat8", "4x4", "4motion", "4matic"):
+            break
+
+        # Stop words & Moroccan cities
+        if tok_lower in STOP_WORDS_MODEL or tok_lower in MOROCCAN_CITY_REGIONS:
+            break
+
+        # Standalone lowercase 'a' (preposition in French, e.g. 'a vendre')
+        if tok_lower == "a" and (i == 0 or (i > 0 and kept_tokens[-1].lower() != "classe")):
+            if i + 1 < len(tokens) and tokens[i + 1].lower() in (
+                "vendre", "casablanca", "rabat", "tanger", "marrakech", "agadir", "fes"
+            ):
+                break
+
+        # Strip repeated brand name prefix
+        if i == 0 and (tok_lower == b_clean.lower() or tok_lower in ("mercedes", "benz", "rover", "peugeut", "peugot")):
+            continue
+
+        kept_tokens.append(tok)
+        if len(kept_tokens) >= 3 and not (kept_tokens[0].lower() in ("range", "série", "serie", "grand", "classe", "land")):
+            break
+
+    m_final = " ".join(kept_tokens).strip()
+    if not m_final or m_final.lower() in ("nan", "none", ""):
+        m_final = "Autre"
+
+    m_final = m_final.title() if m_final.islower() else m_final
+
+    return b_clean, m_final, tr_str
 
 
 USER_AGENTS = [
@@ -440,6 +636,14 @@ class BaseScraper(abc.ABC):
         if not region_str and city_str:
             region_str = infer_moroccan_region(city_str)
 
+        # Harmonize brand and refine model/trim
+        brand_clean, model_clean, trim_clean = clean_brand_and_model(
+            raw_record.get("brand"),
+            raw_record.get("model"),
+            title_raw=str(raw_record.get("title_raw") or ""),
+            trim=str(raw_record.get("trim") or ""),
+        )
+
         # Standardize record
         record: Dict[str, Any] = {
             "listing_id": listing_id,
@@ -448,9 +652,9 @@ class BaseScraper(abc.ABC):
             "date_posted": str(raw_record.get("date_posted") or now_str[:10])[:10],
             "date_scraped": str(raw_record.get("date_scraped") or now_str),
             "title_raw": str(raw_record.get("title_raw") or "").strip(),
-            "brand": str(raw_record.get("brand") or "").strip(),
-            "model": str(raw_record.get("model") or "").strip(),
-            "trim": str(raw_record.get("trim") or "").strip(),
+            "brand": brand_clean,
+            "model": model_clean,
+            "trim": trim_clean,
             "year": self.clean_year(raw_record.get("year")),
             "mileage_km": self.clean_numeric(raw_record.get("mileage_km")),
             "fuel_type": str(raw_record.get("fuel_type") or "").strip(),
@@ -469,6 +673,23 @@ class BaseScraper(abc.ABC):
             "photos_count": self.clean_numeric(raw_record.get("photos_count")) or 0.0,
             "description_raw": str(raw_record.get("description_raw") or "").strip(),
         }
+
+        # 1. ESCAPE NEWLINES IN TEXT FIELDS
+        record["description_raw"] = str(record.get("description_raw") or "").replace("\r", " ").replace("\n", " ").strip()
+        record["title_raw"] = str(record.get("title_raw") or "").replace("\r", " ").replace("\n", " ").strip()
+        if record["description_raw"].lower() in ("nan", "none"):
+            record["description_raw"] = ""
+        if record["title_raw"].lower() in ("nan", "none"):
+            record["title_raw"] = ""
+
+        # 2. FORCE SELLER PHONE AS STRING (10-digit string starting with 0)
+        if record.get("seller_phone"):
+            p_val = str(record["seller_phone"]).replace(".0", "").strip()
+            if p_val and p_val.lower() not in ("nan", "none", "<na>"):
+                record["seller_phone"] = p_val.zfill(10)
+            else:
+                record["seller_phone"] = None
+
         return record
 
     @abc.abstractmethod
@@ -491,6 +712,26 @@ class BaseScraper(abc.ABC):
             if col not in df.columns:
                 df[col] = None
         df = df[SCHEMA_FIELDS].drop_duplicates(subset=["listing_id"])
+
+        # Sanitize text fields and enforce string phone formatting
+        if "description_raw" in df.columns:
+            df["description_raw"] = df["description_raw"].fillna("").astype(str).apply(
+                lambda s: s.replace("\r", " ").replace("\n", " ").strip() if s.lower() not in ("nan", "none") else ""
+            )
+        if "title_raw" in df.columns:
+            df["title_raw"] = df["title_raw"].fillna("").astype(str).apply(
+                lambda s: s.replace("\r", " ").replace("\n", " ").strip() if s.lower() not in ("nan", "none") else ""
+            )
+        if "seller_phone" in df.columns:
+            def _fmt_phone(p):
+                if pd.isna(p) or p is None:
+                    return None
+                s = str(p).replace(".0", "").strip()
+                if not s or s.lower() in ("nan", "none", "<na>"):
+                    return None
+                s = s.zfill(10)
+                return s if len(s) == 10 and s.startswith("0") else None
+            df["seller_phone"] = df["seller_phone"].apply(_fmt_phone)
 
         try:
             df.to_parquet(parquet_path, index=False, engine="pyarrow")
@@ -577,11 +818,11 @@ def consolidate_daily_scrapes(
     if target_date:
         dates_to_process.add(target_date)
     else:
-        # Detect all dates present in format {source}_{YYYY-MM-DD}.csv
-        for f in raw_dir.glob("*_*.csv"):
-            if f.name.startswith("scraped_combined_") or f.name == "used_car_training_combined.csv":
+        # Detect all dates present in format {source}_{YYYY-MM-DD}.csv or scraped_combined_{YYYY-MM-DD}.csv
+        for f in raw_dir.glob("*.csv"):
+            if f.name == "used_car_training_combined.csv":
                 continue
-            m = re.search(r"_(\d{4}-\d{2}-\d{2})\.csv$", f.name)
+            m = re.search(r"(\d{4}-\d{2}-\d{2})\.csv$", f.name)
             if m:
                 dates_to_process.add(m.group(1))
 
@@ -596,19 +837,19 @@ def consolidate_daily_scrapes(
             and not f.name.startswith("avito_local_")
             and f.name != "used_car_training_combined.csv"
         ]
-        if not matching_csvs:
+        out_csv = raw_dir / f"scraped_combined_{d}.csv"
+        out_parquet = raw_dir / f"scraped_combined_{d}.parquet"
+
+        if not matching_csvs and not out_csv.exists():
             continue
 
         frames = []
         files_to_remove = []
 
-        out_csv = raw_dir / f"scraped_combined_{d}.csv"
-        out_parquet = raw_dir / f"scraped_combined_{d}.parquet"
-
         # If a combined file already exists for date d, load it first to merge & deduplicate
         if out_csv.exists():
             try:
-                existing_df = pd.read_csv(out_csv, low_memory=False)
+                existing_df = pd.read_csv(out_csv, low_memory=False, dtype={"seller_phone": str, "listing_id": str})
                 if not existing_df.empty and len(existing_df) > 0:
                     frames.append(existing_df)
             except Exception as e:
@@ -616,7 +857,7 @@ def consolidate_daily_scrapes(
 
         for f in matching_csvs:
             try:
-                df = pd.read_csv(f, low_memory=False)
+                df = pd.read_csv(f, low_memory=False, dtype={"seller_phone": str, "listing_id": str})
                 if not df.empty and len(df) > 0:
                     frames.append(df)
                     files_to_remove.append(f)
@@ -646,8 +887,60 @@ def consolidate_daily_scrapes(
         for col in SCHEMA_FIELDS:
             if col not in merged_df.columns:
                 merged_df[col] = None
-        merged_df = merged_df[SCHEMA_FIELDS]
+        merged_df = merged_df[SCHEMA_FIELDS].copy()
 
+        # 1. ESCAPE NEWLINES IN TEXT FIELDS
+        if "description_raw" in merged_df.columns:
+            merged_df["description_raw"] = (
+                merged_df["description_raw"]
+                .fillna("")
+                .astype(str)
+                .apply(lambda s: s.replace("\r", " ").replace("\n", " ").strip() if s.lower() not in ("nan", "none") else "")
+            )
+        if "title_raw" in merged_df.columns:
+            merged_df["title_raw"] = (
+                merged_df["title_raw"]
+                .fillna("")
+                .astype(str)
+                .apply(lambda s: s.replace("\r", " ").replace("\n", " ").strip() if s.lower() not in ("nan", "none") else "")
+            )
+
+        # 2. FORCE SELLER PHONE AS 10-DIGIT STRING STARTING WITH '0'
+        if "seller_phone" in merged_df.columns:
+            def _clean_phone_val(p):
+                if pd.isna(p) or p is None:
+                    return None
+                s = str(p).replace(".0", "").strip()
+                if not s or s.lower() in ("nan", "none", "<na>"):
+                    return None
+                s = s.zfill(10)
+                if len(s) == 10 and s.startswith("0") and s[1] in "567" and s not in BLACKLIST_PHONES:
+                    return s
+                return None
+
+            merged_df["seller_phone"] = merged_df["seller_phone"].apply(_clean_phone_val)
+            if "seller_phone_hash" in merged_df.columns:
+                def _resolve_hash(row):
+                    h = row.get("seller_phone_hash")
+                    if pd.notna(h) and str(h).strip() != "" and str(h).lower() not in ("nan", "none"):
+                        return str(h).strip()
+                    p = row.get("seller_phone")
+                    if p:
+                        return hash_phone(p)
+                    return None
+                merged_df["seller_phone_hash"] = merged_df.apply(_resolve_hash, axis=1)
+
+        # 3. CLEAN BRAND & MODEL REFINEMENT
+        def _apply_brand_model(row):
+            b, m, tr = clean_brand_and_model(
+                row.get("brand"),
+                row.get("model"),
+                title_raw=str(row.get("title_raw") or ""),
+                trim=str(row.get("trim") or "")
+            )
+            return pd.Series([b, m, tr])
+
+        merged_df[["brand", "model", "trim"]] = merged_df.apply(_apply_brand_model, axis=1)
 
         merged_df.to_csv(out_csv, index=False, encoding="utf-8")
         try:
