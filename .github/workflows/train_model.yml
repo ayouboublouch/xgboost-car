@@ -53,16 +53,15 @@ jobs:
         run: |
           python src/train.py --device cpu
 
-      - name: Commit and push trained models and reports
+      - name: Commit and push model artifacts
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add models/ data/processed/
           if ! git diff --staged --quiet; then
             git commit -m "chore(ml): update trained CatBoost model and benchmarks [skip ci]"
-            git stash --include-untracked || true
-            git pull --rebase origin main || true
+            git pull --rebase origin main
             git push origin main
           else
-            echo "No changes in models or processed data to commit."
+            echo "No new model artifacts to commit."
           fi

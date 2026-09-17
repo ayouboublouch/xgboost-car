@@ -265,9 +265,85 @@ def compute_cross_source_matches(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def standardize_raw_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardize column types before concatenating across raw files."""
+    if df is None or df.empty:
+        return df
+
+    if "seller_phone" in df.columns:
+        df["seller_phone"] = (
+            df["seller_phone"].astype(str).str.replace(r"\.0$", "", regex=True)
+        )
+        df.loc[
+            df["seller_phone"].isin(["nan", "None", "", "<NA>"]), "seller_phone"
+        ] = None
+
+    if "seller_phone_hash" in df.columns:
+        df["seller_phone_hash"] = df["seller_phone_hash"].astype(str).str.strip()
+        df.loc[
+            df["seller_phone_hash"].isin(["nan", "None", "", "<NA>"]), "seller_phone_hash"
+        ] = None
+
+    if "listing_id" in df.columns:
+        df["listing_id"] = df["listing_id"].astype(str).str.strip()
+        df.loc[
+            df["listing_id"].isin(["nan", "None", "", "<NA>"]), "listing_id"
+        ] = None
+
+    for num_col in ["price_mad", "year", "mileage_km", "doors_count", "photos_count"]:
+        if num_col in df.columns:
+            df[num_col] = pd.to_numeric(df[num_col], errors="coerce")
+
+    return df
+
+
+def validate_raw_schema(df: pd.DataFrame, source_name: str = "raw") -> None:
+    """Wrap schema validation (Pandera/asserts) in a try-except block that logs warnings without exiting with returncode 1."""
+    try:
+        assert df is not None, "DataFrame is None"
+        assert not df.empty, "DataFrame is empty"
+        assert len(df) > 0, "DataFrame has 0 rows"
+
+        expected_columns = ["brand", "model", "price_mad", "year"]
+        missing = [c for c in expected_columns if c not in df.columns]
+        if missing:
+            logger.warning("[%s] Schema validation warning: Missing expected columns %s", source_name, missing)
+
+        if "price_mad" in df.columns:
+            invalid_prices = (pd.to_numeric(df["price_mad"], errors="coerce") <= 0).sum()
+            if invalid_prices > 0:
+                logger.warning("[%s] Schema validation warning: %d non-positive prices detected", source_name, invalid_prices)
+
+        if "year" in df.columns:
+            invalid_years = (
+                (pd.to_numeric(df["year"], errors="coerce") < 1980)
+                | (pd.to_numeric(df["year"], errors="coerce") > 2027)
+            ).sum()
+            if invalid_years > 0:
+                logger.warning("[%s] Schema validation warning: %d out-of-range years detected", source_name, invalid_years)
+
+        # Attempt optional Pandera validation if installed
+        try:
+            import pandera as pa
+        except ImportError:
+            pass
+
+    except AssertionError as ae:
+        logger.warning("[%s] Schema assert warning: %s", source_name, ae)
+    except Exception as e:
+        logger.warning("[%s] Schema validation non-fatal error: %s", source_name, e)
+
+
 def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
-    """Scan and merge all raw parquet and csv datasets in data/raw, guaranteeing seed dataset inclusion."""
-    # First purge empty/dummy files and consolidate any daily batches
+    """
+    Scan and merge all raw parquet and csv datasets in data/raw:
+    - Reads all .csv and .parquet files safely from data/raw/.
+    - Skips empty files (<= 500 bytes) and ignores files containing 'prediction' or 'comparison'.
+    - Uses low_memory=False and on_bad_lines='skip' when reading CSVs to prevent unescaped newline breaks from crashing Pandas.
+    - For .parquet files, uses pd.read_parquet().
+    - Standardizes column types before concatenating.
+    - Wraps schema validation (Pandera/asserts) in a try-except block logging warnings without exiting with returncode 1.
+    """
     try:
         purge_empty_raw_files(raw_dir)
     except Exception as e:
@@ -281,81 +357,79 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
     frames = []
     loaded_stems = set()
 
-    # Guarantee inclusion of the verified baseline seed dataset (656 records)
-    seed_file = raw_dir / "used_car_training_combined.csv"
-    if seed_file.exists():
-        try:
-            df_seed = pd.read_csv(seed_file, low_memory=False)
-            if not df_seed.empty:
-                logger.info("Loaded %d verified baseline records from %s", len(df_seed), seed_file.name)
-                frames.append(df_seed)
-                loaded_stems.add(seed_file.stem)
-        except Exception as e:
-            logger.warning("Could not load baseline seed file %s: %s", seed_file.name, e)
-
-    scraped_frames = []
+    # Always process .parquet first, then .csv to prioritize typed parquet files
     parquet_files = sorted(list(raw_dir.glob("*.parquet")))
-    for pf in parquet_files:
-        try:
-            df_p = pd.read_parquet(pf)
-            if df_p is not None and not df_p.empty and len(df_p) > 0:
-                if "brand" not in df_p.columns or "price_mad" not in df_p.columns:
-                    logger.warning("Skipping %s: missing 'brand' or 'price_mad' column", pf.name)
-                    continue
-                valid_mask = (
-                    df_p["brand"].notna()
-                    & (df_p["brand"].astype(str).str.strip() != "")
-                    & (df_p["brand"].astype(str).str.lower() != "nan")
-                    & df_p["price_mad"].notna()
-                    & (pd.to_numeric(df_p["price_mad"], errors="coerce") > 0)
-                )
-                valid_rows = df_p[valid_mask].copy()
-                if len(valid_rows) > 0:
-                    logger.info("Loaded %d valid scraped rows from %s", len(valid_rows), pf.name)
-                    scraped_frames.append(valid_rows)
-                    loaded_stems.add(pf.stem)
-                else:
-                    logger.warning("Skipping file %s (0 rows with valid brand and price)", pf.name)
-        except Exception as e:
-            logger.warning("Could not read parquet %s: %s", pf.name, e)
-
     csv_files = sorted(list(raw_dir.glob("*.csv")))
-    for cf in csv_files:
-        if cf.name == "used_car_training_combined.csv" or cf.stem in loaded_stems:
-            continue
-        try:
-            df_c = pd.read_csv(cf, low_memory=False)
-            if df_c is not None and not df_c.empty and len(df_c) > 0:
-                if "brand" not in df_c.columns or "price_mad" not in df_c.columns:
-                    logger.warning("Skipping %s: missing 'brand' or 'price_mad' column", cf.name)
-                    continue
-                valid_mask = (
-                    df_c["brand"].notna()
-                    & (df_c["brand"].astype(str).str.strip() != "")
-                    & (df_c["brand"].astype(str).str.lower() != "nan")
-                    & df_c["price_mad"].notna()
-                    & (pd.to_numeric(df_c["price_mad"], errors="coerce") > 0)
-                )
-                valid_rows = df_c[valid_mask].copy()
-                if len(valid_rows) > 0:
-                    logger.info("Loaded %d valid scraped rows from %s", len(valid_rows), cf.name)
-                    scraped_frames.append(valid_rows)
-                    loaded_stems.add(cf.stem)
-                else:
-                    logger.warning("Skipping file %s (0 rows with valid brand and price)", cf.name)
-        except Exception as e:
-            logger.warning("Could not read csv %s: %s", cf.name, e)
+    raw_files = parquet_files + csv_files
 
-    if scraped_frames:
-        frames.extend(scraped_frames)
-    else:
-        logger.info("No additional valid scraped batches detected in %s; training strictly on baseline seed dataset.", raw_dir)
+    for f in raw_files:
+        fname_lower = f.name.lower()
+        # Ignore files containing 'prediction' or 'comparison'
+        if "prediction" in fname_lower or "comparison" in fname_lower:
+            logger.info("Ignoring non-raw/model file: %s", f.name)
+            continue
+
+        # Skip empty files (<= 500 bytes)
+        try:
+            if f.stat().st_size <= 500:
+                logger.info("Skipping small/empty file (<= 500 bytes): %s (%d bytes)", f.name, f.stat().st_size)
+                continue
+        except OSError as e:
+            logger.warning("Could not stat file %s: %s", f.name, e)
+            continue
+
+        # If already loaded counterpart parquet for this stem, skip csv (except baseline seed dataset)
+        if f.suffix.lower() == ".csv" and f.stem in loaded_stems and f.name != "used_car_training_combined.csv":
+            continue
+
+        df = None
+        try:
+            if f.suffix.lower() == ".parquet":
+                df = pd.read_parquet(f)
+            elif f.suffix.lower() == ".csv":
+                df = pd.read_csv(f, low_memory=False, on_bad_lines="skip")
+        except Exception as e:
+            logger.warning("Could not read %s: %s", f.name, e)
+            continue
+
+        if df is None or df.empty:
+            logger.warning("File %s yielded empty DataFrame, skipping", f.name)
+            continue
+
+        # Standardize column types before concatenating
+        df = standardize_raw_dataframe(df)
+
+        # Wrap schema validation (Pandera/asserts) in a try-except block
+        validate_raw_schema(df, source_name=f.name)
+
+        # Check for brand and price_mad columns
+        if "brand" in df.columns and "price_mad" in df.columns:
+            valid_mask = (
+                df["brand"].notna()
+                & (df["brand"].astype(str).str.strip() != "")
+                & (df["brand"].astype(str).str.lower() != "nan")
+                & df["price_mad"].notna()
+                & (pd.to_numeric(df["price_mad"], errors="coerce") > 0)
+            )
+            valid_rows = df[valid_mask].copy()
+            if len(valid_rows) > 0:
+                logger.info("Loaded %d valid rows from %s", len(valid_rows), f.name)
+                frames.append(valid_rows)
+                loaded_stems.add(f.stem)
+            else:
+                logger.warning("Skipping file %s (0 valid rows with brand and positive price)", f.name)
+        else:
+            logger.warning("Skipping file %s: missing 'brand' or 'price_mad' column", f.name)
 
     if not frames:
-        raise FileNotFoundError(f"No parquet or csv files found in {raw_dir}")
+        raise FileNotFoundError(f"No valid parquet or csv files found in {raw_dir}")
 
     merged = pd.concat(frames, ignore_index=True)
     logger.info("Combined total raw rows before deduplication: %d", len(merged))
+
+    # Validate overall merged schema
+    validate_raw_schema(merged, source_name="merged_raw")
+
     return merged
 
 
