@@ -542,10 +542,10 @@ class BaseScraper(abc.ABC):
         url: str,
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
-        timeout: int = 15,
+        timeout: Any = (5, 10),
         max_retries: Optional[int] = None,
     ) -> Optional[str]:
-        """Fetch page content with configurable retries and timeout."""
+        """Fetch page content with configurable retries and timeout (connect, read)."""
         default_ua = random.choice(USER_AGENTS)
         retries = max_retries if max_retries is not None else self.max_retries
         for attempt in range(1, retries + 1):
@@ -618,7 +618,8 @@ class BaseScraper(abc.ABC):
                             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
                         }
                     )
-                    with urllib.request.urlopen(req, context=ctx, timeout=timeout) as resp:
+                    timeout_val = sum(timeout) if isinstance(timeout, (tuple, list)) else timeout
+                    with urllib.request.urlopen(req, context=ctx, timeout=timeout_val) as resp:
                         if resp.status == 200:
                             return resp.read().decode("utf-8", errors="replace")
             except Exception:

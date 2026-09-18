@@ -68,6 +68,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("harvester.continuous")
 
+CURSOR_MOTEUR_FILE = TRACKING_DIR / "last_page_moteur.txt"
+CURSOR_WANDALOO_FILE = TRACKING_DIR / "last_page_wandaloo.txt"
+
+
+def load_page_cursor(filepath: Path, default: int = 1) -> int:
+    """Read last scraped page index from persistent cursor file. Defaults to 1 if missing or invalid."""
+    if filepath.exists():
+        try:
+            val = filepath.read_text(encoding="utf-8").strip()
+            page = int(val)
+            if page >= 1:
+                return page
+        except Exception as e:
+            logger.warning("Could not read cursor file %s: %s. Using default %d", filepath.name, e, default)
+    return default
+
+
+def save_page_cursor(filepath: Path, page: int) -> None:
+    """Save current page index to persistent cursor file."""
+    try:
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_text(str(page), encoding="utf-8")
+    except Exception as e:
+        logger.warning("Could not save cursor to %s: %s", filepath.name, e)
+
 
 def sanitize_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     """Sanitize text fields, enforce 10-digit seller phones, and harmonize brand/model."""
@@ -267,7 +292,7 @@ def update_master_database(raw_dir: Path) -> Path:
 
 
 def run_continuous_harvest(
-    duration_hours: float = 5.0,
+    duration_hours: float = 3.5,
     output_dir: str = "data/raw",
     batch_size: int = 50,
 ) -> None:
@@ -276,14 +301,20 @@ def run_continuous_harvest(
     output_path.mkdir(parents=True, exist_ok=True)
 
     start_time = datetime.datetime.now()
-    # Safety cutoff: stop 0.15 hours (~9 minutes) before duration expires to guarantee clean flush & commit
-    safety_margin = 0.15 if duration_hours >= 0.5 else (duration_hours * 0.1)
-    stop_time = start_time + datetime.timedelta(hours=duration_hours - safety_margin)
+    # 20-minute safety buffer (3.2h when duration is 3.5h) to guarantee clean flush & commit before runner SIGTERM
+    if duration_hours >= 3.5:
+        stop_time = start_time + datetime.timedelta(hours=3.2)
+    elif duration_hours > 0.5:
+        stop_time = start_time + datetime.timedelta(hours=duration_hours - (20.0 / 60.0))
+    else:
+        stop_time = start_time + datetime.timedelta(hours=duration_hours * 0.85)
+
+    safety_buffer_mins = (start_time + datetime.timedelta(hours=duration_hours) - stop_time).total_seconds() / 60.0
 
     logger.info("==================================================================")
     logger.info("Starting 24/7 Continuous Car Harvester")
-    logger.info("Requested duration: %.2f hours | Safety cutoff: %.2f hours", duration_hours, safety_margin)
-    logger.info("Scheduled stop time: %s", stop_time.strftime("%Y-%m-%d %H:%M:%S"))
+    logger.info("Requested duration: %.2f hours | Safety buffer: %.1f minutes", duration_hours, safety_buffer_mins)
+    logger.info("Scheduled safety stop time: %s", stop_time.strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("Batch checkpoint interval: every %d new records", batch_size)
     logger.info("Output directory: %s", output_path)
     logger.info("==================================================================")
@@ -292,6 +323,12 @@ def run_continuous_harvest(
     seen_ids: Set[str] = load_seen_listing_ids()
     logger.info("Loaded %d previously seen listing IDs from persistent register.", len(seen_ids))
 
+    # Initialize persistent page cursors
+    moteur_page = load_page_cursor(CURSOR_MOTEUR_FILE, default=1)
+    wandaloo_page = load_page_cursor(CURSOR_WANDALOO_FILE, default=1)
+    logger.info("Resuming Moteur.ma pagination from cursor: page %d", moteur_page)
+    logger.info("Resuming Wandaloo.ma pagination from cursor: page %d", wandaloo_page)
+
     # Initialize scraper engines
     moteur = MoteurScraper(output_dir=str(output_path))
     wandaloo = WandalooScraper(output_dir=str(output_path))
@@ -299,11 +336,6 @@ def run_continuous_harvest(
     # Sync scrapers seen_ids
     moteur.seen_ids = seen_ids
     wandaloo.seen_ids = seen_ids
-
-    moteur_page = 1
-    wandaloo_page = 1
-    consecutive_empty_moteur = 0
-    consecutive_empty_wandaloo = 0
 
     total_harvested = 0
     batch_buffer: List[Dict[str, Any]] = []
@@ -327,34 +359,40 @@ def run_continuous_harvest(
         # 1. Harvest from Moteur.ma
         try:
             moteur_batch = moteur.scrape_page(moteur_page)
-            new_moteur = [r for r in moteur_batch if r.get("listing_id") not in seen_ids]
-            if new_moteur:
-                consecutive_empty_moteur = 0
-                for r in new_moteur:
-                    lid = str(r.get("listing_id")).strip()
-                    seen_ids.add(lid)
-                    batch_buffer.append(r)
-                logger.info("[Moteur] Harvested %d fresh listings from page %d", len(new_moteur), moteur_page)
-            else:
-                consecutive_empty_moteur += 1
-                logger.debug("[Moteur] 0 fresh listings on page %d (all seen or empty)", moteur_page)
-
-            # Advance or wrap pagination
-            moteur_page += 1
-            if consecutive_empty_moteur >= 5 or moteur_page > 150:
-                logger.info("[Moteur] Resetting pagination to page 1 for incoming ads.")
+            if not moteur_batch:
+                logger.info("[Moteur] Page %d returned 0 listings (hit end of catalog or empty). Wrapping back to page 1.", moteur_page)
                 moteur_page = 1
-                consecutive_empty_moteur = 0
+                save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
+            else:
+                new_moteur = [r for r in moteur_batch if r.get("listing_id") not in seen_ids]
+                if new_moteur:
+                    for r in new_moteur:
+                        lid = str(r.get("listing_id")).strip()
+                        seen_ids.add(lid)
+                        batch_buffer.append(r)
+                    logger.info("[Moteur] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_moteur), moteur_page, len(batch_buffer))
+                else:
+                    logger.info("[Moteur] Page %d had %d listings, all already seen. Advancing deeper into catalog...", moteur_page, len(moteur_batch))
+
+                # Advance cursor deeper into historical listings
+                moteur_page += 1
+                if moteur_page > 400:
+                    logger.info("[Moteur] Reached deep catalog limit (page %d). Wrapping back to page 1.", moteur_page)
+                    moteur_page = 1
+                save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
 
         except Exception as e:
             logger.warning("[Moteur] Error scraping page %d: %s", moteur_page, e)
             moteur_page += 1
+            save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
 
         # Checkpoint if batch buffer reached target size
         if len(batch_buffer) >= batch_size:
             flushed = flush_checkpoint(batch_buffer, continuous_csv, seen_ids)
             total_harvested += flushed
             batch_buffer.clear()
+            save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
+            save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
 
         # Check time before next source
         if datetime.datetime.now() >= stop_time:
@@ -366,34 +404,40 @@ def run_continuous_harvest(
         # 2. Harvest from Wandaloo.ma
         try:
             wandaloo_batch = wandaloo.scrape_page(wandaloo_page)
-            new_wandaloo = [r for r in wandaloo_batch if r.get("listing_id") not in seen_ids]
-            if new_wandaloo:
-                consecutive_empty_wandaloo = 0
-                for r in new_wandaloo:
-                    lid = str(r.get("listing_id")).strip()
-                    seen_ids.add(lid)
-                    batch_buffer.append(r)
-                logger.info("[Wandaloo] Harvested %d fresh listings from page %d", len(new_wandaloo), wandaloo_page)
-            else:
-                consecutive_empty_wandaloo += 1
-                logger.debug("[Wandaloo] 0 fresh listings on page %d (all seen or empty)", wandaloo_page)
-
-            # Advance or wrap pagination
-            wandaloo_page += 1
-            if consecutive_empty_wandaloo >= 5 or wandaloo_page > 80:
-                logger.info("[Wandaloo] Resetting pagination to page 1 for incoming ads.")
+            if not wandaloo_batch:
+                logger.info("[Wandaloo] Page %d returned 0 listings (hit end of catalog or empty). Wrapping back to page 1.", wandaloo_page)
                 wandaloo_page = 1
-                consecutive_empty_wandaloo = 0
+                save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
+            else:
+                new_wandaloo = [r for r in wandaloo_batch if r.get("listing_id") not in seen_ids]
+                if new_wandaloo:
+                    for r in new_wandaloo:
+                        lid = str(r.get("listing_id")).strip()
+                        seen_ids.add(lid)
+                        batch_buffer.append(r)
+                    logger.info("[Wandaloo] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_wandaloo), wandaloo_page, len(batch_buffer))
+                else:
+                    logger.info("[Wandaloo] Page %d had %d listings, all already seen. Advancing deeper into catalog...", wandaloo_page, len(wandaloo_batch))
+
+                # Advance cursor deeper into historical listings
+                wandaloo_page += 1
+                if wandaloo_page > 200:
+                    logger.info("[Wandaloo] Reached deep catalog limit (page %d). Wrapping back to page 1.", wandaloo_page)
+                    wandaloo_page = 1
+                save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
 
         except Exception as e:
             logger.warning("[Wandaloo] Error scraping page %d: %s", wandaloo_page, e)
             wandaloo_page += 1
+            save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
 
         # Checkpoint if batch buffer reached target size
         if len(batch_buffer) >= batch_size:
             flushed = flush_checkpoint(batch_buffer, continuous_csv, seen_ids)
             total_harvested += flushed
             batch_buffer.clear()
+            save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
+            save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
 
         time.sleep(random.uniform(1.0, 2.5))
 
@@ -404,6 +448,10 @@ def run_continuous_harvest(
         total_harvested += flushed
         batch_buffer.clear()
 
+    # Save final page cursors to disk
+    save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
+    save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
+
     # Update master database parquet
     logger.info("Updating consolidated master parquet database ...")
     update_master_database(output_path)
@@ -413,6 +461,7 @@ def run_continuous_harvest(
     logger.info("Continuous harvester finished in %.2f hours.", elapsed)
     logger.info("Total fresh listings ingested in this session: %d", total_harvested)
     logger.info("Total persistent seen IDs in register: %d", len(seen_ids))
+    logger.info("Current persistent cursors: Moteur=%d | Wandaloo=%d", moteur_page, wandaloo_page)
     logger.info("==================================================================")
 
 
@@ -421,8 +470,8 @@ def main():
     parser.add_argument(
         "--duration-hours",
         type=float,
-        default=5.0,
-        help="Duration in hours to continuously harvest (default: 5.0)",
+        default=3.5,
+        help="Duration in hours to continuously harvest (default: 3.5)",
     )
     parser.add_argument(
         "--output-dir",
@@ -443,6 +492,7 @@ def main():
         output_dir=args.output_dir,
         batch_size=args.batch_size,
     )
+
 
 
 if __name__ == "__main__":

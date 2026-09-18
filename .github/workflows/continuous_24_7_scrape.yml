@@ -8,7 +8,7 @@ on:
       duration_hours:
         description: 'Duration in hours for continuous harvesting'
         required: false
-        default: '5.0'
+        default: '3.5'
 
 concurrency:
   group: continuous-harvest
@@ -20,12 +20,12 @@ permissions:
 
 jobs:
   continuous-harvest:
-    name: Continuous 5-Hour Harvester
+    name: Continuous 3.5-Hour Harvester
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: write
-    timeout-minutes: 320
+    timeout-minutes: 240
 
     steps:
       - name: Checkout repository
@@ -56,26 +56,22 @@ jobs:
           python -c "import sys; print('Python version:', sys.version)"
           python scrapers/continuous_harvester.py --help || true
 
-      - name: Run 5-Hour Continuous Harvester
+      - name: Run 3.5-Hour Continuous Harvester
         run: |
           mkdir -p data/raw data/tracking
-          python scrapers/continuous_harvester.py --duration-hours ${{ github.event.inputs.duration_hours || '5.0' }}
+          python scrapers/continuous_harvester.py --duration-hours ${{ github.event.inputs.duration_hours || '3.5' }}
 
-      - name: Consolidate Master Database Parquet
+      - name: Commit New Inventory and Master Database
+        if: always()
         run: |
+          git config --global user.name "autohouse-harvester[bot]"
+          git config --global user.email "harvester@users.noreply.github.com"
           python -c "from scrapers.continuous_harvester import update_master_database; from pathlib import Path; update_master_database(Path('data/raw'))"
-
-      - name: Commit and push continuous harvest data
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git status
-          git add data/raw/scraped_continuous_* data/raw/scraped_master_database.parquet data/tracking/seen_listing_ids.txt || true
+          git add data/
           if ! git diff --staged --quiet; then
-            git commit -m "chore(data): ingest continuous 24/7 car listings [skip ci]"
-            git stash --include-untracked || true
-            git pull --rebase origin main || true
-            git push origin main || (git pull --rebase origin main && git push origin main)
+            git commit -m "feat(ingestion): persist continuous harvest batch [skip ci]"
+            git pull --rebase origin main || git rebase --abort
+            git push origin main
           else
-            echo "No new continuous raw data detected to commit."
+            echo "No new unique listings to commit."
           fi

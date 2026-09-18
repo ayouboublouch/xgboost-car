@@ -90,7 +90,7 @@ class WandalooScraper(BaseScraper):
         )
 
     def extract_phone_from_detail(self, detail_url: str, session: Optional[Any] = None) -> Optional[str]:
-        """Fetch listing page (/occasion/...html) and parse seller contact details with timeout=5."""
+        """Fetch listing page (/occasion/...html) and parse seller contact details with timeout=(5, 10)."""
         if not detail_url:
             return None
         try:
@@ -98,13 +98,13 @@ class WandalooScraper(BaseScraper):
             html = None
             if s is not None:
                 try:
-                    resp = s.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=5, verify=False)
+                    resp = s.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=(5, 10), verify=False)
                     if resp.status_code == 200:
                         html = resp.text
                 except Exception:
                     html = None
             if not html:
-                html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=5, max_retries=1)
+                html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=(5, 10), max_retries=1)
             if not html:
                 return None
 

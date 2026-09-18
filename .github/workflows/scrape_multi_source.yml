@@ -1,14 +1,20 @@
 name: Parallel Multi-Source Car Scraper
 
+# Scheduled cron disabled in favor of 24/7 Continuous Car Harvester to prevent git push collisions
+# on:
+#   schedule:
+#     - cron: '0 2,14 * * *'
 on:
-  schedule:
-    - cron: '0 2,14 * * *'
   workflow_dispatch:
     inputs:
       max_pages:
         description: 'Pages to scrape per source'
         required: false
         default: '50'
+
+concurrency:
+  group: continuous-harvest
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -112,7 +118,7 @@ jobs:
           git add data/raw/
           if ! git diff --staged --quiet; then
             git commit -m "chore(data): ingest new car listings"
-            git pull --rebase origin main
+            git pull --rebase origin main || git rebase --abort
             git push origin main
             echo "committed=true" >> "$GITHUB_OUTPUT"
           else
