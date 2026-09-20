@@ -70,8 +70,16 @@ jobs:
           git add data/
           if ! git diff --staged --quiet; then
             git commit -m "feat(ingestion): persist continuous harvest batch [skip ci]"
-            git pull --rebase origin main || git rebase --abort
-            git push origin main
+            for i in 1 2 3 4 5; do
+              echo "Attempt $i: rebasing and pushing to origin main..."
+              if git pull --rebase origin main && git push origin main; then
+                echo "Successfully pushed continuous harvest batch."
+                break
+              fi
+              echo "Push rejected or collision detected, aborting rebase and retrying in 5s..."
+              git rebase --abort 2>/dev/null || true
+              sleep 5
+            done
           else
             echo "No new unique listings to commit."
           fi

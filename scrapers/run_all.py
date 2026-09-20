@@ -177,6 +177,15 @@ def run():
     purge_empty_raw_files(output_path)
     if args.source == "all" or args.consolidate:
         consolidate_daily_scrapes(output_path)
+        try:
+            from scrapers.continuous_harvester import update_master_database
+            update_master_database(output_path)
+        except Exception as e:
+            try:
+                from continuous_harvester import update_master_database
+                update_master_database(output_path)
+            except Exception as e2:
+                logger.warning("Could not update master database: %s", e2)
 
 
 if __name__ == "__main__":

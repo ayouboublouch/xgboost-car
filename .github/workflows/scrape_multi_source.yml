@@ -1,10 +1,8 @@
 name: Parallel Multi-Source Car Scraper
 
-# Scheduled cron disabled in favor of 24/7 Continuous Car Harvester to prevent git push collisions
-# on:
-#   schedule:
-#     - cron: '0 2,14 * * *'
 on:
+  schedule:
+    - cron: '0 2,14 * * *'
   workflow_dispatch:
     inputs:
       max_pages:
@@ -13,7 +11,7 @@ on:
         default: '50'
 
 concurrency:
-  group: continuous-harvest
+  group: scrape-multi-source
   cancel-in-progress: false
 
 permissions:
@@ -24,7 +22,7 @@ jobs:
   scrape:
     name: Scrape ${{ matrix.source }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -60,7 +58,7 @@ jobs:
         id: run_scraper
         continue-on-error: true
         run: |
-          mkdir -p data/raw
+          mkdir -p data/raw data/tracking
           python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 50 }}
 
       - name: Upload Scraped Artifact
@@ -86,41 +84,55 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'scrapers/requirements_scraper.txt'
 
       - name: Install dependencies for consolidation
         run: |
           python -m pip install --upgrade pip
-          pip install pandas pyarrow
+          pip install -r scrapers/requirements_scraper.txt || pip install requests beautifulsoup4 lxml pandas pyarrow fake-useragent
 
       - name: Download all scraped artifacts
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: raw-data-*
           path: data/raw
           merge-multiple: true
 
-      - name: Consolidate daily raw scrapes
+      - name: Consolidate daily raw scrapes and update master database
         run: |
-          mkdir -p data/raw
+          mkdir -p data/raw data/tracking
           python scrapers/run_all.py --source none --consolidate
+          python -c "from scrapers.continuous_harvester import update_master_database; from pathlib import Path; update_master_database(Path('data/raw'))"
 
       - name: Commit and push newly collected data
         id: commit
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "autohouse-harvester[bot]"
+          git config --global user.email "harvester@users.noreply.github.com"
           git status
-          git add data/raw/
+          git add data/
           if ! git diff --staged --quiet; then
-            git commit -m "chore(data): ingest new car listings"
-            git pull --rebase origin main || git rebase --abort
-            git push origin main
-            echo "committed=true" >> "$GITHUB_OUTPUT"
+            git commit -m "feat(ingestion): persist multi-source scrape batch [skip ci]"
+            for i in 1 2 3 4 5; do
+              echo "Attempt $i: rebasing and pushing to origin main..."
+              if git pull --rebase origin main && git push origin main; then
+                echo "Successfully pushed multi-source batch."
+                echo "committed=true" >> "$GITHUB_OUTPUT"
+                break
+              fi
+              echo "Push rejected or collision detected, aborting rebase and retrying in 5s..."
+              git rebase --abort 2>/dev/null || true
+              sleep 5
+            done
           else
             echo "No new raw data detected to commit."
             echo "committed=false" >> "$GITHUB_OUTPUT"
@@ -128,6 +140,8 @@ jobs:
 
       - name: Trigger Training Workflow
         if: steps.commit.outputs.committed == 'true'
-        run: gh workflow run train_model.yml
+        continue-on-error: true
+        run: |
+          gh workflow run train_model.yml || echo "Training workflow trigger skipped or already queued."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
