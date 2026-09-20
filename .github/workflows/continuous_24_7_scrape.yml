@@ -1,8 +1,6 @@
 name: 24/7 Continuous Car Harvester
 
 on:
-  schedule:
-    - cron: '0 */5 * * *'
   workflow_dispatch:
     inputs:
       duration_hours:

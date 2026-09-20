@@ -1,8 +1,6 @@
 name: Parallel Multi-Source Car Scraper
 
 on:
-  schedule:
-    - cron: '0 2,14 * * *'
   workflow_dispatch:
     inputs:
       max_pages:
