@@ -1,0 +1,17 @@
+{
+  "moteur": {
+    "last_page": 65,
+    "total_scraped": 8357,
+    "last_updated": "2026-09-21T18:20:41"
+  },
+  "wandaloo": {
+    "last_page": 42,
+    "total_scraped": 345,
+    "last_updated": "2026-09-21T18:20:41"
+  },
+  "avito": {
+    "last_page": 12,
+    "total_scraped": 403,
+    "last_updated": "2026-09-21T18:20:41"
+  }
+}
