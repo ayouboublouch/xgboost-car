@@ -425,6 +425,8 @@ class AvitoScraper(BaseScraper):
     def scrape(
         self,
         max_pages: int = 50,
+        start_page: int = 1,
+        output_filename: Optional[str] = None,
         use_matrix: bool = False,
         letters: Optional[List[str]] = None,
         years: Optional[List[int]] = None,
@@ -432,7 +434,7 @@ class AvitoScraper(BaseScraper):
     ) -> pd.DataFrame:
         """
         Scrape Avito.ma car listings.
-        By default, paginates sequentially through the main car catalog up to max_pages.
+        By default, paginates sequentially through the main car catalog from start_page for up to max_pages.
         If use_matrix is True, runs iteration matrix across Letters x Years.
         """
         all_records = []
@@ -453,7 +455,7 @@ class AvitoScraper(BaseScraper):
             consecutive_empty = 0
             for year in years:
                 for letter in letters:
-                    for p in range(1, max_pages + 1):
+                    for p in range(start_page, start_page + max_pages):
                         batch = self.scrape_query(query=letter, year=year, page=p)
                         if not batch:
                             consecutive_empty += 1
@@ -473,9 +475,10 @@ class AvitoScraper(BaseScraper):
                 if len(all_records) == 0 and consecutive_empty >= 8:
                     break
         else:
-            logger.info("[%s] Scraping sequentially: pages 1 to %d", self.source_name, max_pages)
+            end_page = start_page + max_pages - 1
+            logger.info("[%s] Scraping sequentially: pages %d to %d (max %d pages)", self.source_name, start_page, end_page, max_pages)
             consecutive_empty = 0
-            for p in range(1, max_pages + 1):
+            for p in range(start_page, start_page + max_pages):
                 batch = self.scrape_page(p)
                 if not batch:
                     consecutive_empty += 1
@@ -492,7 +495,7 @@ class AvitoScraper(BaseScraper):
             return pd.DataFrame(columns=SCHEMA_FIELDS)
 
         df = pd.DataFrame(all_records)
-        self.save_output(df)
+        self.save_output(df, custom_filename=output_filename)
         return df
 
 

@@ -2,11 +2,6 @@ name: Parallel Multi-Source Car Scraper
 
 on:
   workflow_dispatch:
-    inputs:
-      max_pages:
-        description: 'Pages to scrape per source'
-        required: false
-        default: '50'
 
 concurrency:
   group: scrape-multi-source
@@ -18,14 +13,32 @@ permissions:
 
 jobs:
   scrape:
-    name: Scrape ${{ matrix.source }}
+    name: Scrape ${{ matrix.source }} (p.${{ matrix.start_page }}-${{ matrix.start_page + matrix.max_pages - 1 }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 6
       matrix:
-        source: [moteur, wandaloo, avito]
+        include:
+          - source: moteur
+            start_page: 1
+            max_pages: 60
+          - source: moteur
+            start_page: 61
+            max_pages: 60
+          - source: avito
+            start_page: 15
+            max_pages: 50
+          - source: avito
+            start_page: 66
+            max_pages: 50
+          - source: wandaloo
+            start_page: 1
+            max_pages: 40
+          - source: wandaloo
+            start_page: 41
+            max_pages: 40
 
     steps:
       - name: Checkout repository
@@ -52,19 +65,23 @@ jobs:
           python -c "import sys; print('Python version:', sys.version)"
           python scrapers/run_all.py --help || true
 
-      - name: Run Scraper for ${{ matrix.source }}
+      - name: Run Partitioned Scraper for ${{ matrix.source }} (start page ${{ matrix.start_page }})
         id: run_scraper
         continue-on-error: true
         run: |
           mkdir -p data/raw data/tracking
-          python scrapers/run_all.py --source ${{ matrix.source }} --max-pages ${{ github.event.inputs.max_pages || 50 }}
+          python scrapers/run_all.py \
+            --source ${{ matrix.source }} \
+            --start-page ${{ matrix.start_page }} \
+            --max-pages ${{ matrix.max_pages }} \
+            --output-filename "scraped_${{ matrix.source }}_part_${{ matrix.start_page }}.csv"
 
       - name: Upload Scraped Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-data-${{ matrix.source }}
-          path: data/raw/${{ matrix.source }}_*
+          name: raw-data-${{ matrix.source }}-part-${{ matrix.start_page }}
+          path: data/raw/scraped_${{ matrix.source }}_part_${{ matrix.start_page }}.*
           if-no-files-found: ignore
 
   aggregate-and-commit:
@@ -105,11 +122,11 @@ jobs:
           path: data/raw
           merge-multiple: true
 
-      - name: Consolidate daily raw scrapes and update master database
+      - name: Consolidate scraped chunks and update master database
         run: |
           mkdir -p data/raw data/tracking
-          python scrapers/run_all.py --source none --consolidate
-          python -c "from scrapers.continuous_harvester import update_master_database; from pathlib import Path; update_master_database(Path('data/raw'))"
+          ls -la data/raw/
+          python -c "from scrapers.continuous_harvester import update_master_database; from pathlib import Path; p = update_master_database(Path('data/raw')); print('Consolidated into:', p)"
 
       - name: Commit and push newly collected data
         id: commit
@@ -119,7 +136,7 @@ jobs:
           git status
           git add data/
           if ! git diff --staged --quiet; then
-            git commit -m "feat(ingestion): persist multi-source scrape batch [skip ci]"
+            git commit -m "feat(ingestion): persist 6-worker multi-source scrape batch [skip ci]"
             for i in 1 2 3 4 5; do
               echo "Attempt $i: rebasing and pushing to origin main..."
               if git pull --rebase origin main && git push origin main; then

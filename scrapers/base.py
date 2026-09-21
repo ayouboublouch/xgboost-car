@@ -881,11 +881,16 @@ class BaseScraper(abc.ABC):
         """Entry point to execute the scraper. Must be implemented by subclasses."""
         pass
 
-    def save_output(self, df: pd.DataFrame) -> None:
+    def save_output(self, df: pd.DataFrame, custom_filename: Optional[str] = None) -> None:
         """Persist harmonized DataFrame to Parquet & CSV."""
         today_str = datetime.date.today().strftime("%Y-%m-%d")
-        parquet_path = self.output_dir / f"{self.source_name}_{today_str}.parquet"
-        csv_path = self.output_dir / f"{self.source_name}_{today_str}.csv"
+        if custom_filename:
+            csv_path = self.output_dir / custom_filename
+            parquet_name = custom_filename.rsplit(".", 1)[0] + ".parquet"
+            parquet_path = self.output_dir / parquet_name
+        else:
+            parquet_path = self.output_dir / f"{self.source_name}_{today_str}.parquet"
+            csv_path = self.output_dir / f"{self.source_name}_{today_str}.csv"
 
         if df is None or df.empty or len(df) == 0:
             logger.warning("[%s] Scraper harvested 0 records. Writing nothing.", self.source_name)

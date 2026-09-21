@@ -231,12 +231,16 @@ def update_master_database(raw_dir: Path) -> Path:
     master_parquet = raw_dir / "scraped_master_database.parquet"
     dfs = []
 
-    # Match all scraped_combined_*.csv, scraped_continuous_*.csv, and avito_local_*.csv
-    candidate_files = (
-        sorted(list(raw_dir.glob("scraped_combined_*.csv")))
-        + sorted(list(raw_dir.glob("scraped_continuous_*.csv")))
-        + sorted(list(raw_dir.glob("avito_local_*.csv")))
-    )
+    # Match all scraped_combined_*.csv, scraped_continuous_*.csv, scraped_*_part_*.csv, and avito/moteur/wandaloo files
+    candidate_files = sorted(list(set(
+        list(raw_dir.glob("scraped_combined_*.csv"))
+        + list(raw_dir.glob("scraped_continuous_*.csv"))
+        + list(raw_dir.glob("scraped_*_part_*.csv"))
+        + list(raw_dir.glob("avito_local_*.csv"))
+        + list(raw_dir.glob("moteur_*.csv"))
+        + list(raw_dir.glob("wandaloo_*.csv"))
+        + list(raw_dir.glob("avito_*.csv"))
+    )))
 
     for f in candidate_files:
         try:

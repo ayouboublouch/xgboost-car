@@ -96,6 +96,12 @@ def run():
         help="Target platform to scrape (default: moteur, use none to skip scraping)",
     )
     parser.add_argument(
+        "--start-page",
+        type=int,
+        default=1,
+        help="Initial page to start scraping from (default: 1)",
+    )
+    parser.add_argument(
         "--max-pages",
         type=int,
         default=50,
@@ -112,6 +118,12 @@ def run():
         type=str,
         default="data/raw",
         help="Directory to save raw Parquet & CSV files (default: data/raw)",
+    )
+    parser.add_argument(
+        "--output-filename",
+        type=str,
+        default=None,
+        help="Custom output CSV filename (e.g. scraped_moteur_part_1.csv)",
     )
     parser.add_argument(
         "--consolidate",
@@ -133,7 +145,13 @@ def run():
 
     logger.info("==========================================================")
     logger.info("Executing Multi-Source Scrapers: %s", targets)
-    logger.info("Primary source: %s | Max pages: %d | Min rows: %d", args.source, args.max_pages, args.min_rows)
+    logger.info(
+        "Primary source: %s | Start page: %d | Max pages: %d | Output file: %s",
+        args.source,
+        args.start_page,
+        args.max_pages,
+        args.output_filename,
+    )
     logger.info("Output directory: %s", args.output_dir)
     logger.info("==========================================================")
 
@@ -146,11 +164,15 @@ def run():
             logger.warning("Could not load scraper for '%s': %s. Skipping.", src, e)
             continue
 
-        logger.info("\n>>> Starting provider: %s ...", src)
+        logger.info("\n>>> Starting provider: %s (page %d to %d) ...", src, args.start_page, args.start_page + args.max_pages - 1)
         records_count = 0
         scraper = cls(output_dir=args.output_dir)
         try:
-            df = scraper.scrape(max_pages=args.max_pages)
+            df = scraper.scrape(
+                max_pages=args.max_pages,
+                start_page=args.start_page,
+                output_filename=args.output_filename,
+            )
             if df is not None and not df.empty:
                 records_count = len(df)
         except Exception as e:

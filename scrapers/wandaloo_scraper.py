@@ -417,13 +417,14 @@ class WandalooScraper(BaseScraper):
         logger.info("[%s] Page %d: parsed %d listings", self.source_name, page_num, len(records))
         return records
 
-    def scrape(self, max_pages: int = 40, **kwargs) -> pd.DataFrame:
-        """Crawl Wandaloo used car listings up to max_pages (default 40)."""
-        logger.info("[%s] Starting crawl for up to %d pages ...", self.source_name, max_pages)
+    def scrape(self, max_pages: int = 40, start_page: int = 1, output_filename: Optional[str] = None, **kwargs) -> pd.DataFrame:
+        """Crawl Wandaloo used car listings for up to max_pages starting from start_page."""
+        end_page = start_page + max_pages - 1
+        logger.info("[%s] Starting crawl for pages %d to %d (max %d pages) ...", self.source_name, start_page, end_page, max_pages)
         all_records: List[Dict[str, Any]] = []
 
         consecutive_empty = 0
-        for p in range(1, max_pages + 1):
+        for p in range(start_page, start_page + max_pages):
             batch = self.scrape_page(p)
             if not batch:
                 consecutive_empty += 1
@@ -442,7 +443,7 @@ class WandalooScraper(BaseScraper):
 
         df = pd.DataFrame(all_records)
         logger.info("[%s] Crawl complete. Total records: %d", self.source_name, len(df))
-        self.save_output(df)
+        self.save_output(df, custom_filename=output_filename)
         return df
 
 
