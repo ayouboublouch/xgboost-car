@@ -60,13 +60,22 @@ jobs:
 
       - name: Commit and push model artifacts
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add models/ data/processed/
+          git config --global user.name "autohouse-mlops[bot]"
+          git config --global user.email "mlops@users.noreply.github.com"
+          git add models/ data/processed/ reports/ || true
           if ! git diff --staged --quiet; then
-            git commit -m "chore(ml): update trained CatBoost model and benchmarks [skip ci]"
-            git pull --rebase origin main
-            git push origin main
+            git commit -m "chore(ml): update trained CatBoost model, predictions and benchmarks [skip ci]"
+            for i in 1 2 3 4 5; do
+              echo "Attempt $i: rebasing and pushing model artifacts to origin main..."
+              git stash push --include-untracked -m "ci-temp-stash" 2>/dev/null || true
+              if git pull --rebase origin main && git push origin main; then
+                echo "Successfully pushed model artifacts and predictions."
+                break
+              fi
+              echo "Push rejected or collision detected, aborting rebase and retrying in 5s..."
+              git rebase --abort 2>/dev/null || true
+              sleep 5
+            done
           else
             echo "No new model artifacts to commit."
           fi

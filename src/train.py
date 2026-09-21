@@ -23,6 +23,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+# Ensure stdout and stderr handle UTF-8 and emojis safely on all platforms (Windows cp1252 fix)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Guarantee required directories exist at script initialization
 os.makedirs("models", exist_ok=True)
 os.makedirs("data/processed", exist_ok=True)
@@ -72,6 +78,7 @@ CATEGORICAL_FEATURES = [
     "condition",
     "owners_count",
 ]
+ALL_FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 TARGET = "price_mad"
 
 
@@ -473,6 +480,79 @@ def main():
     cbm_model_path = output_dir / "catboost_model.cbm"
     cb_model.save_model(str(cbm_model_path))
     logger.info("Exported native CatBoost model to %s (format: .cbm, no pickle)", cbm_model_path)
+
+    # 6. Generate Complete Dataset Predictions & Market Deal Ratings (matching notebook logic)
+    logger.info("Generating predictions and market deal ratings across complete dataset...")
+    X_full = df[feature_cols].copy()
+    for c in CATEGORICAL_FEATURES:
+        X_full[c] = X_full[c].fillna("Inconnu").astype(str)
+
+    full_pool = Pool(X_full, cat_features=cat_indices)
+    predicted_prices = np.round(cb_model.predict(full_pool), 2)
+
+    df_predictions = df.copy()
+    df_predictions["predicted_price_mad"] = predicted_prices
+
+    # Deviation percentage: (actual - predicted) / predicted * 100
+    df_predictions["deviation_percentage_%"] = np.round(
+        ((df_predictions["price_mad"] - df_predictions["predicted_price_mad"]) / df_predictions["predicted_price_mad"]) * 100, 2
+    )
+
+    # Market deal rating matching notebook logic and emojis
+    df_predictions["market_deal_rating"] = np.where(
+        df_predictions["deviation_percentage_%"] <= -12.0,
+        "🔥 Great Deal (Underpriced)",
+        np.where(
+            df_predictions["deviation_percentage_%"] >= 15.0,
+            "⚠️ Overpriced",
+            "✅ Fair Market Value",
+        ),
+    )
+
+    prediction_cols = [
+        "listing_id",
+        "brand",
+        "model",
+        "year",
+        "mileage_km",
+        "fuel_type",
+        "transmission",
+        "city",
+        "price_mad",
+        "predicted_price_mad",
+        "deviation_percentage_%",
+        "market_deal_rating",
+        "seller_phone",
+    ]
+
+    for col in prediction_cols:
+        if col not in df_predictions.columns:
+            df_predictions[col] = None
+
+    predictions_df = df_predictions[prediction_cols].copy()
+
+    # Format seller_phone as clean string
+    if "seller_phone" in predictions_df.columns:
+        def _fmt_phone(p):
+            if pd.isna(p) or p is None:
+                return None
+            s = str(p).replace(".0", "").strip()
+            return s if s and s.lower() not in ("nan", "none", "<na>") else None
+        predictions_df["seller_phone"] = predictions_df["seller_phone"].apply(_fmt_phone)
+
+    pred_path_models = output_dir / "car_price_predictions.csv"
+    pred_path_notebook = output_dir / "car_price_predictions_all.csv"
+    pred_path_processed = Path("data/processed/car_price_predictions.csv")
+    predictions_df.to_csv(pred_path_models, index=False, encoding="utf-8")
+    predictions_df.to_csv(pred_path_notebook, index=False, encoding="utf-8")
+    predictions_df.to_csv(pred_path_processed, index=False, encoding="utf-8")
+
+    logger.info("Saved %d predictions to %s, %s, and %s", len(predictions_df), pred_path_models, pred_path_notebook, pred_path_processed)
+    print("\n" + "=" * 80)
+    print("MARKET DEAL ANALYSIS PREVIEW (Sample Top Deals):")
+    print("=" * 80)
+    print(predictions_df[["listing_id", "brand", "model", "year", "price_mad", "predicted_price_mad", "deviation_percentage_%", "market_deal_rating"]].head(10).to_string(index=False))
+    print("=" * 80)
 
 
 if __name__ == "__main__":
