@@ -66,16 +66,30 @@ class AvitoScraper(BaseScraper):
                         or item.get("value")
                         or item.get("val")
                         or item.get("title")
+                        or item.get("fullValue")
                     )
                     if key:
                         parsed[str(key).lower()] = val
         elif isinstance(params_list_or_dict, dict):
             for k, v in params_list_or_dict.items():
-                if isinstance(v, dict):
-                    val = v.get("valueLabel") or v.get("value") or v.get("val")
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, dict):
+                            key = item.get("id") or item.get("name") or item.get("key")
+                            val = (
+                                item.get("valueLabel")
+                                or item.get("value")
+                                or item.get("val")
+                                or item.get("title")
+                                or item.get("fullValue")
+                            )
+                            if key:
+                                parsed[str(key).lower()] = val
+                elif isinstance(v, dict):
+                    val = v.get("valueLabel") or v.get("value") or v.get("val") or v.get("fullValue")
+                    parsed[str(k).lower()] = val
                 else:
-                    val = v
-                parsed[str(k).lower()] = val
+                    parsed[str(k).lower()] = v
         return parsed
 
     def _extract_ad_from_json(self, ad: Dict[str, Any], date_scraped: str) -> Optional[Dict[str, Any]]:
@@ -144,23 +158,49 @@ class AvitoScraper(BaseScraper):
         model = params.get("model") or params.get("modele") or ""
         trim = params.get("trim") or params.get("finition") or ""
         year = params.get("regdate") or params.get("annee_modele") or params.get("year") or params.get("annee")
-        mileage_km = params.get("mileage") or params.get("kilometrage") or params.get("mileage_km")
+        mileage_km = (
+            params.get("mileage_exact")
+            or params.get("mileage")
+            or params.get("kilometrage")
+            or params.get("mileage_km")
+        )
         fuel_type = params.get("fuel") or params.get("carburant") or params.get("fuel_type") or ""
-        transmission = params.get("gearbox") or params.get("boite_de_vitesses") or params.get("transmission") or ""
-        fiscal_power_cv = params.get("horse_power") or params.get("puissance_fiscale") or params.get("fiscal_power") or ""
+        transmission = (
+            params.get("bv")
+            or params.get("gearbox")
+            or params.get("boite_de_vitesses")
+            or params.get("transmission")
+            or ""
+        )
+        fiscal_power_cv = (
+            params.get("horse_power")
+            or params.get("puissance_fiscale")
+            or params.get("fiscal_power")
+            or ""
+        )
         customs_status = params.get("customs") or params.get("statut_douanier") or params.get("dedouanee") or ""
         condition = params.get("condition") or params.get("etat") or ""
         owners_count = params.get("first_owner") or params.get("nombre_de_mains") or params.get("owners_count") or ""
         doors_count = params.get("doors") or params.get("nombre_de_portes") or params.get("doors_count")
 
-        # Extract seller phone numbers from user info, contact objects, params, description, and title
+        # Extract seller phone numbers from seller, user info, contact objects, params, description, and title
         seller_phone = None
-        if isinstance(user_info, dict):
+        seller_obj = ad.get("seller") or {}
+        if isinstance(seller_obj, dict):
+            p_sub = seller_obj.get("phone")
+            if isinstance(p_sub, dict):
+                seller_phone = extract_moroccan_phone(p_sub.get("number") or p_sub.get("phone"))
+            elif p_sub:
+                seller_phone = extract_moroccan_phone(p_sub)
+            if not seller_phone:
+                seller_phone = extract_moroccan_phone(seller_obj.get("phoneNumber") or seller_obj.get("contactPhone"))
+
+        if not seller_phone and isinstance(user_info, dict):
             seller_phone = extract_moroccan_phone(
                 user_info.get("phone") or user_info.get("phoneNumber") or user_info.get("contactPhone")
             )
         if not seller_phone:
-            contact_info = ad.get("contact") or ad.get("seller") or {}
+            contact_info = ad.get("contact") or {}
             if isinstance(contact_info, dict):
                 seller_phone = extract_moroccan_phone(
                     contact_info.get("phone") or contact_info.get("phoneNumber")
@@ -352,53 +392,104 @@ class AvitoScraper(BaseScraper):
 
         return results
 
-    def scrape(self, max_pages: int = 1, letters: Optional[List[str]] = None, years: Optional[List[int]] = None, **kwargs) -> pd.DataFrame:
-        """Run iteration matrix over Letters x Years."""
-        letters = letters or list(string.ascii_uppercase)
-        years = years or [2022, 2023, 2024, 2025, 2026]
+    def scrape_page(self, page_num: int) -> List[Dict[str, Any]]:
+        """Fetch and parse one page from Avito.ma car listings."""
+        params = {"o": page_num}
+        date_scraped = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        html = self.fetch_page(self.BASE_URL, params=params)
+        if not html:
+            # Fallback URL format
+            alt_url = f"https://www.avito.ma/fr/maroc/voitures_d_occasion--%C3%A0_vendre?o={page_num}"
+            html = self.fetch_page(alt_url)
 
-        logger.info(
-            "[%s] Starting matrix: %d letters x %d years (%d combinations), max_pages=%d",
-            self.source_name,
-            len(letters),
-            len(years),
-            len(letters) * len(years),
-            max_pages,
-        )
+        if not html:
+            logger.warning("[%s] Failed to fetch page %d", self.source_name, page_num)
+            return []
 
+        results = []
+        next_data = self._extract_next_data(html)
+        if next_data:
+            ad_objects = self._find_ads_recursive(next_data)
+            for ad_dict in ad_objects:
+                parsed = self._extract_ad_from_json(ad_dict, date_scraped)
+                if parsed:
+                    results.append(parsed)
+
+        if not results:
+            dom_ads = self._extract_ads_from_dom(html, date_scraped)
+            results.extend(dom_ads)
+
+        logger.info("[%s] Page %d: successfully parsed %d listings", self.source_name, page_num, len(results))
+        return results
+
+    def scrape(
+        self,
+        max_pages: int = 50,
+        use_matrix: bool = False,
+        letters: Optional[List[str]] = None,
+        years: Optional[List[int]] = None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Scrape Avito.ma car listings.
+        By default, paginates sequentially through the main car catalog up to max_pages.
+        If use_matrix is True, runs iteration matrix across Letters x Years.
+        """
         all_records = []
-        consecutive_empty = 0
-        total_queries = 0
 
-        for year in years:
-            for letter in letters:
-                for p in range(1, max_pages + 1):
-                    total_queries += 1
-                    batch = self.scrape_query(query=letter, year=year, page=p)
-                    if not batch:
-                        consecutive_empty += 1
-                        # If first 8 queries yield 0 records, IP is Cloudflare-blocked; abort early
-                        if len(all_records) == 0 and consecutive_empty >= 8:
-                            logger.error(
-                                "[%s] %d consecutive empty queries and 0 total records. "
-                                "Runner IP is blocked by Cloudflare challenge. Aborting early to avoid wasting CI time.",
-                                self.source_name,
-                                consecutive_empty,
-                            )
-                            break
-                    else:
-                        consecutive_empty = 0
-                        all_records.extend(batch)
-                    self.sleep()
+        if use_matrix:
+            letters = letters or list(string.ascii_uppercase)
+            years = years or [2022, 2023, 2024, 2025, 2026]
+
+            logger.info(
+                "[%s] Starting matrix: %d letters x %d years (%d combinations), max_pages=%d",
+                self.source_name,
+                len(letters),
+                len(years),
+                len(letters) * len(years),
+                max_pages,
+            )
+
+            consecutive_empty = 0
+            for year in years:
+                for letter in letters:
+                    for p in range(1, max_pages + 1):
+                        batch = self.scrape_query(query=letter, year=year, page=p)
+                        if not batch:
+                            consecutive_empty += 1
+                            if len(all_records) == 0 and consecutive_empty >= 8:
+                                logger.error(
+                                    "[%s] %d consecutive empty queries. Runner IP blocked by Cloudflare. Halting.",
+                                    self.source_name,
+                                    consecutive_empty,
+                                )
+                                break
+                        else:
+                            consecutive_empty = 0
+                            all_records.extend(batch)
+                        self.sleep()
+                    if len(all_records) == 0 and consecutive_empty >= 8:
+                        break
                 if len(all_records) == 0 and consecutive_empty >= 8:
                     break
-            if len(all_records) == 0 and consecutive_empty >= 8:
-                break
+        else:
+            logger.info("[%s] Scraping sequentially: pages 1 to %d", self.source_name, max_pages)
+            consecutive_empty = 0
+            for p in range(1, max_pages + 1):
+                batch = self.scrape_page(p)
+                if not batch:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 5:
+                        logger.warning("[%s] 5 consecutive empty pages at page %d. Stopping pagination.", self.source_name, p)
+                        break
+                else:
+                    consecutive_empty = 0
+                    all_records.extend(batch)
+                self.sleep()
 
-        assert len(all_records) > 0, (
-            f"[{self.source_name}] Scraper harvested 0 records! "
-            "Runner is blocked by Cloudflare anti-bot challenge. Failing loudly to prevent saving empty CSV."
-        )
+        if not all_records:
+            logger.warning("[%s] Scraper collected 0 records. Check for Cloudflare challenge or network block.", self.source_name)
+            return pd.DataFrame(columns=SCHEMA_FIELDS)
 
         df = pd.DataFrame(all_records)
         self.save_output(df)

@@ -13,5 +13,26 @@
     "last_page": 12,
     "total_scraped": 403,
     "last_updated": "2026-09-21T18:20:41"
-  }
+  },
+  "recent_sessions": [
+    {
+      "session_id": "sess_20260921_231127_avito",
+      "scraper_name": "test_verifier",
+      "source": "avito",
+      "start_time": "2026-09-21 23:09:27",
+      "end_time": "2026-09-21 23:11:27",
+      "duration_seconds": 120.0,
+      "pages_scraped": 3,
+      "page_range": {
+        "start": 1,
+        "end": 3
+      },
+      "records_extracted": 105,
+      "records_added": 42,
+      "duplicates_skipped": 63,
+      "cumulative_seen_ids": 9095,
+      "status": "success",
+      "notes": "Verification test"
+    }
+  ]
 }

@@ -426,6 +426,7 @@ USER_AGENTS = [
 TRACKING_DIR = Path("data/tracking")
 SEEN_IDS_FILE = TRACKING_DIR / "seen_listing_ids.txt"
 PROGRESS_FILE = TRACKING_DIR / "scraping_progress.json"
+SESSIONS_FILE = TRACKING_DIR / "scraping_sessions.jsonl"
 
 
 def load_scraping_progress(filepath: Optional[Path] = None) -> Dict[str, Any]:
@@ -472,6 +473,78 @@ def update_scraping_progress(
         logger.warning("Could not write scraping progress to %s: %s", path, e)
 
     return progress
+
+
+def record_scraping_session(
+    scraper_name: str,
+    source: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    pages_scraped: int,
+    records_extracted: int,
+    records_added: int,
+    duplicates_skipped: int,
+    start_page: int = 1,
+    end_page: int = 1,
+    status: str = "success",
+    notes: str = "",
+    filepath: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Log a structured scraping session to data/tracking/scraping_sessions.jsonl
+    and record latest session metadata in data/tracking/scraping_progress.json.
+    """
+    path = Path(filepath or SESSIONS_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    seen_ids = load_seen_listing_ids()
+    duration_secs = round((end_time - start_time).total_seconds(), 2)
+
+    session_data = {
+        "session_id": f"sess_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{source}",
+        "scraper_name": scraper_name,
+        "source": source,
+        "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "duration_seconds": duration_secs,
+        "pages_scraped": pages_scraped,
+        "page_range": {"start": start_page, "end": end_page},
+        "records_extracted": records_extracted,
+        "records_added": records_added,
+        "duplicates_skipped": duplicates_skipped,
+        "cumulative_seen_ids": len(seen_ids),
+        "status": status,
+        "notes": notes,
+    }
+
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(session_data, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("Could not append session data to %s: %s", path, e)
+
+    # Also update scraping_progress.json with recent_sessions
+    try:
+        progress = load_scraping_progress()
+        if "recent_sessions" not in progress or not isinstance(progress["recent_sessions"], list):
+            progress["recent_sessions"] = []
+        progress["recent_sessions"].append(session_data)
+        # Keep only the last 20 sessions in progress.json to keep it compact
+        progress["recent_sessions"] = progress["recent_sessions"][-20:]
+        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+            json.dump(progress, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.warning("Could not update progress recent_sessions: %s", e)
+
+    logger.info(
+        "Session recorded: %s on %s (+%d new / %d skipped in %.1fs)",
+        scraper_name,
+        source,
+        records_added,
+        duplicates_skipped,
+        duration_secs,
+    )
+    return session_data
 
 
 def load_seen_listing_ids(filepath: Optional[Path] = None) -> Set[str]:

@@ -42,6 +42,7 @@ try:
         PROGRESS_FILE,
         load_scraping_progress,
         update_scraping_progress,
+        record_scraping_session,
         load_seen_listing_ids,
         append_seen_listing_ids,
         clean_brand_and_model,
@@ -50,6 +51,7 @@ try:
     )
     from scrapers.moteur_scraper import MoteurScraper
     from scrapers.wandaloo_scraper import WandalooScraper
+    from scrapers.avito_scraper import AvitoScraper
 except ImportError:
     from base import (
         SCHEMA_FIELDS,
@@ -58,6 +60,7 @@ except ImportError:
         PROGRESS_FILE,
         load_scraping_progress,
         update_scraping_progress,
+        record_scraping_session,
         load_seen_listing_ids,
         append_seen_listing_ids,
         clean_brand_and_model,
@@ -66,6 +69,7 @@ except ImportError:
     )
     from moteur_scraper import MoteurScraper
     from wandaloo_scraper import WandalooScraper
+    from avito_scraper import AvitoScraper
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,6 +80,7 @@ logger = logging.getLogger("harvester.continuous")
 
 CURSOR_MOTEUR_FILE = TRACKING_DIR / "last_page_moteur.txt"
 CURSOR_WANDALOO_FILE = TRACKING_DIR / "last_page_wandaloo.txt"
+CURSOR_AVITO_FILE = TRACKING_DIR / "last_page_avito.txt"
 
 
 def load_page_cursor(filepath: Path, default: int = 1) -> int:
@@ -332,19 +337,39 @@ def run_continuous_harvest(
     # Initialize persistent page cursors
     moteur_page = load_page_cursor(CURSOR_MOTEUR_FILE, default=1)
     wandaloo_page = load_page_cursor(CURSOR_WANDALOO_FILE, default=1)
+    avito_page = load_page_cursor(CURSOR_AVITO_FILE, default=1)
     logger.info("Resuming Moteur.ma pagination from cursor: page %d", moteur_page)
     logger.info("Resuming Wandaloo.ma pagination from cursor: page %d", wandaloo_page)
+    logger.info("Resuming Avito.ma pagination from cursor: page %d", avito_page)
+
+    moteur_start_page = moteur_page
+    wandaloo_start_page = wandaloo_page
+    avito_start_page = avito_page
 
     # Initialize scraper engines
     moteur = MoteurScraper(output_dir=str(output_path))
     wandaloo = WandalooScraper(output_dir=str(output_path))
+    avito = AvitoScraper(output_dir=str(output_path))
 
     # Sync scrapers seen_ids
     moteur.seen_ids = seen_ids
     wandaloo.seen_ids = seen_ids
+    avito.seen_ids = seen_ids
 
     total_harvested = 0
     batch_buffer: List[Dict[str, Any]] = []
+
+    moteur_added = 0
+    wandaloo_added = 0
+    avito_added = 0
+
+    moteur_extracted = 0
+    wandaloo_extracted = 0
+    avito_extracted = 0
+
+    moteur_pages = 0
+    wandaloo_pages = 0
+    avito_pages = 0
 
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     continuous_csv = output_path / f"scraped_continuous_{today_str}.csv"
@@ -355,27 +380,31 @@ def run_continuous_harvest(
         now = datetime.datetime.now()
         remaining_secs = (stop_time - now).total_seconds()
         logger.info(
-            "\n--- [Iter %d | Remaining: %.1f min] Moteur page %d | Wandaloo page %d ---",
+            "\n--- [Iter %d | Remaining: %.1f min] Moteur p.%d | Wandaloo p.%d | Avito p.%d ---",
             iteration,
             remaining_secs / 60.0,
             moteur_page,
             wandaloo_page,
+            avito_page,
         )
 
         # 1. Harvest from Moteur.ma
         try:
             moteur_batch = moteur.scrape_page(moteur_page)
+            moteur_pages += 1
             if not moteur_batch:
                 logger.info("[Moteur] Page %d returned 0 listings (hit end of catalog or empty). Wrapping back to page 1.", moteur_page)
                 moteur_page = 1
                 save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
             else:
+                moteur_extracted += len(moteur_batch)
                 new_moteur = [r for r in moteur_batch if r.get("listing_id") not in seen_ids]
                 if new_moteur:
                     for r in new_moteur:
                         lid = str(r.get("listing_id")).strip()
                         seen_ids.add(lid)
                         batch_buffer.append(r)
+                    moteur_added += len(new_moteur)
                     logger.info("[Moteur] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_moteur), moteur_page, len(batch_buffer))
                     update_scraping_progress("moteur", moteur_page, len(new_moteur))
                 else:
@@ -401,6 +430,7 @@ def run_continuous_harvest(
             batch_buffer.clear()
             save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
             save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
+            save_page_cursor(CURSOR_AVITO_FILE, avito_page)
 
         # Check time before next source
         if datetime.datetime.now() >= stop_time:
@@ -412,17 +442,20 @@ def run_continuous_harvest(
         # 2. Harvest from Wandaloo.ma
         try:
             wandaloo_batch = wandaloo.scrape_page(wandaloo_page)
+            wandaloo_pages += 1
             if not wandaloo_batch:
                 logger.info("[Wandaloo] Page %d returned 0 listings (hit end of catalog or empty). Wrapping back to page 1.", wandaloo_page)
                 wandaloo_page = 1
                 save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
             else:
+                wandaloo_extracted += len(wandaloo_batch)
                 new_wandaloo = [r for r in wandaloo_batch if r.get("listing_id") not in seen_ids]
                 if new_wandaloo:
                     for r in new_wandaloo:
                         lid = str(r.get("listing_id")).strip()
                         seen_ids.add(lid)
                         batch_buffer.append(r)
+                    wandaloo_added += len(new_wandaloo)
                     logger.info("[Wandaloo] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_wandaloo), wandaloo_page, len(batch_buffer))
                     update_scraping_progress("wandaloo", wandaloo_page, len(new_wandaloo))
                 else:
@@ -448,6 +481,58 @@ def run_continuous_harvest(
             batch_buffer.clear()
             save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
             save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
+            save_page_cursor(CURSOR_AVITO_FILE, avito_page)
+
+        # Check time before next source
+        if datetime.datetime.now() >= stop_time:
+            logger.info("Safety stop time reached during Wandaloo scrape. Exiting loop.")
+            break
+
+        time.sleep(random.uniform(1.0, 2.5))
+
+        # 3. Harvest from Avito.ma
+        try:
+            avito_batch = avito.scrape_page(avito_page)
+            avito_pages += 1
+            if not avito_batch:
+                logger.info("[Avito] Page %d returned 0 listings (empty or challenge). Wrapping back to page 1.", avito_page)
+                avito_page = 1
+                save_page_cursor(CURSOR_AVITO_FILE, avito_page)
+            else:
+                avito_extracted += len(avito_batch)
+                new_avito = [r for r in avito_batch if r.get("listing_id") not in seen_ids]
+                if new_avito:
+                    for r in new_avito:
+                        lid = str(r.get("listing_id")).strip()
+                        seen_ids.add(lid)
+                        batch_buffer.append(r)
+                    avito_added += len(new_avito)
+                    logger.info("[Avito] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_avito), avito_page, len(batch_buffer))
+                    update_scraping_progress("avito", avito_page, len(new_avito))
+                else:
+                    logger.info("[Avito] Page %d had %d listings, all already seen. Advancing...", avito_page, len(avito_batch))
+                    update_scraping_progress("avito", avito_page, 0)
+
+                # Advance cursor deeper into catalog
+                avito_page += 1
+                if avito_page > 300:
+                    logger.info("[Avito] Reached deep catalog limit (page %d). Wrapping back to page 1.", avito_page)
+                    avito_page = 1
+                save_page_cursor(CURSOR_AVITO_FILE, avito_page)
+
+        except Exception as e:
+            logger.warning("[Avito] Error scraping page %d: %s", avito_page, e)
+            avito_page += 1
+            save_page_cursor(CURSOR_AVITO_FILE, avito_page)
+
+        # Checkpoint if batch buffer reached target size
+        if len(batch_buffer) >= batch_size:
+            flushed = flush_checkpoint(batch_buffer, continuous_csv, seen_ids)
+            total_harvested += flushed
+            batch_buffer.clear()
+            save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
+            save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
+            save_page_cursor(CURSOR_AVITO_FILE, avito_page)
 
         time.sleep(random.uniform(1.0, 2.5))
 
@@ -461,6 +546,52 @@ def run_continuous_harvest(
     # Save final page cursors to disk
     save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
     save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
+    save_page_cursor(CURSOR_AVITO_FILE, avito_page)
+
+    # Record detailed scraping session telemetry
+    session_end = datetime.datetime.now()
+    if moteur_pages > 0:
+        record_scraping_session(
+            scraper_name="continuous_harvester",
+            source="moteur",
+            start_time=start_time,
+            end_time=session_end,
+            pages_scraped=moteur_pages,
+            records_extracted=moteur_extracted,
+            records_added=moteur_added,
+            duplicates_skipped=max(0, moteur_extracted - moteur_added),
+            start_page=moteur_start_page,
+            end_page=moteur_page,
+            status="success",
+        )
+    if wandaloo_pages > 0:
+        record_scraping_session(
+            scraper_name="continuous_harvester",
+            source="wandaloo",
+            start_time=start_time,
+            end_time=session_end,
+            pages_scraped=wandaloo_pages,
+            records_extracted=wandaloo_extracted,
+            records_added=wandaloo_added,
+            duplicates_skipped=max(0, wandaloo_extracted - wandaloo_added),
+            start_page=wandaloo_start_page,
+            end_page=wandaloo_page,
+            status="success",
+        )
+    if avito_pages > 0:
+        record_scraping_session(
+            scraper_name="continuous_harvester",
+            source="avito",
+            start_time=start_time,
+            end_time=session_end,
+            pages_scraped=avito_pages,
+            records_extracted=avito_extracted,
+            records_added=avito_added,
+            duplicates_skipped=max(0, avito_extracted - avito_added),
+            start_page=avito_start_page,
+            end_page=avito_page,
+            status="success",
+        )
 
     # Update master database parquet
     logger.info("Updating consolidated master parquet database ...")
@@ -471,7 +602,7 @@ def run_continuous_harvest(
     logger.info("Continuous harvester finished in %.2f hours.", elapsed)
     logger.info("Total fresh listings ingested in this session: %d", total_harvested)
     logger.info("Total persistent seen IDs in register: %d", len(seen_ids))
-    logger.info("Current persistent cursors: Moteur=%d | Wandaloo=%d", moteur_page, wandaloo_page)
+    logger.info("Current persistent cursors: Moteur=%d | Wandaloo=%d | Avito=%d", moteur_page, wandaloo_page, avito_page)
     logger.info("==================================================================")
 
 
