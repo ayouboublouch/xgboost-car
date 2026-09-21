@@ -47,24 +47,28 @@ jobs:
           pip install -r requirements.txt
 
       - name: Ensure required directories exist
-        run: mkdir -p data/raw data/processed models
+        run: mkdir -p data/raw data/processed data/tracking models
 
-      - name: Run Data Cleaning & Verification
+      - name: Run Data Cleaning & Feature Engineering
         run: |
           python src/clean.py
           python src/features.py
 
-      - name: Run Model Training
+      - name: Train Champion Blended Ensemble
         run: |
           python src/train.py --device cpu
+
+      - name: Verify Inference & Deal Rating
+        run: |
+          python src/predict.py
 
       - name: Commit and push model artifacts
         run: |
           git config --global user.name "autohouse-mlops[bot]"
           git config --global user.email "mlops@users.noreply.github.com"
-          git add models/ data/processed/ reports/ || true
+          git add models/ data/processed/ data/tracking/ reports/ || true
           if ! git diff --staged --quiet; then
-            git commit -m "chore(ml): update trained CatBoost model, predictions and benchmarks [skip ci]"
+            git commit -m "chore(ml): update trained Blended Ensemble models, predictions and benchmarks [skip ci]"
             for i in 1 2 3 4 5; do
               echo "Attempt $i: rebasing and pushing model artifacts to origin main..."
               git stash push --include-untracked -m "ci-temp-stash" 2>/dev/null || true

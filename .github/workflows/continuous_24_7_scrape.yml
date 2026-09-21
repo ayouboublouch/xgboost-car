@@ -1,12 +1,14 @@
 name: 24/7 Continuous Car Harvester
 
 on:
+  schedule:
+    - cron: '0 */4 * * *'
   workflow_dispatch:
     inputs:
       duration_hours:
         description: 'Duration in hours for continuous harvesting'
         required: false
-        default: '3.5'
+        default: '3.2'
 
 concurrency:
   group: continuous-harvest
@@ -18,7 +20,7 @@ permissions:
 
 jobs:
   continuous-harvest:
-    name: Continuous 3.5-Hour Harvester
+    name: Continuous 3.2-Hour Harvester
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -54,10 +56,10 @@ jobs:
           python -c "import sys; print('Python version:', sys.version)"
           python scrapers/continuous_harvester.py --help || true
 
-      - name: Run 3.5-Hour Continuous Harvester
+      - name: Run 3.2-Hour Continuous Harvester
         run: |
           mkdir -p data/raw data/tracking
-          python scrapers/continuous_harvester.py --duration-hours ${{ github.event.inputs.duration_hours || '3.5' }}
+          python scrapers/continuous_harvester.py --duration-hours ${{ github.event.inputs.duration_hours || '3.2' }}
 
       - name: Commit New Inventory and Master Database
         if: always()
@@ -70,6 +72,7 @@ jobs:
             git commit -m "feat(ingestion): persist continuous harvest batch [skip ci]"
             for i in 1 2 3 4 5; do
               echo "Attempt $i: rebasing and pushing to origin main..."
+              git stash push --include-untracked -m "ci-temp-stash" 2>/dev/null || true
               if git pull --rebase origin main && git push origin main; then
                 echo "Successfully pushed continuous harvest batch."
                 break
@@ -81,3 +84,12 @@ jobs:
           else
             echo "No new unique listings to commit."
           fi
+
+      - name: Trigger Model Retraining and Inference Pipeline
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering Train & Evaluate Price Model workflow..."
+          gh workflow run train_model.yml || true

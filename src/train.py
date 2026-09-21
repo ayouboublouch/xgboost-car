@@ -51,6 +51,12 @@ try:
 except ImportError:
     HAS_LIGHTGBM = False
 
+try:
+    import xgboost as xgb
+    HAS_XGBOOST = True
+except ImportError:
+    HAS_XGBOOST = False
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -363,40 +369,115 @@ def main():
     except Exception as e:
         logger.warning("RandomForest training failed: %s", e)
 
-    # 4. LightGBM Regressor (if installed)
+    # Prepare aligned categorical datasets for LightGBM & XGBoost
+    X_train_enc = X_train.copy()
+    X_val_enc = X_val.copy()
+    X_test_enc = X_test.copy()
+    for c in CATEGORICAL_FEATURES:
+        X_train_enc[c] = X_train_enc[c].fillna("Inconnu").astype("category")
+        cats = X_train_enc[c].cat.categories
+        X_val_enc[c] = pd.Categorical(X_val_enc[c].fillna("Inconnu"), categories=cats)
+        X_test_enc[c] = pd.Categorical(X_test_enc[c].fillna("Inconnu"), categories=cats)
+
+    # Save categorical categories to disk for consistent inference
+    import json
+    cat_categories = {c: [str(x) for x in X_train_enc[c].cat.categories] for c in CATEGORICAL_FEATURES}
+    with open(output_dir / "categorical_categories.json", "w", encoding="utf-8") as f:
+        json.dump(cat_categories, f, indent=2, ensure_ascii=False)
+
+    # Detect GPU / DGX A100 availability
+    is_ci = bool(os.environ.get("CI"))
+    force_cpu = (args.device.lower() == "cpu") or is_ci
+    use_gpu = False
+    cb_task_type = "CPU"
+    cb_thread_count = 2
+
+    if not force_cpu and args.device.lower() in ("cuda", "gpu", "auto"):
+        try:
+            test_cb = CatBoostRegressor(iterations=1, task_type="GPU", verbose=0)
+            test_cb.fit(np.array([[1.0]]), np.array([1.0]))
+            use_gpu = True
+            cb_task_type = "GPU"
+            cb_thread_count = None
+            logger.info("Hardware acceleration (GPU / NVIDIA DGX A100) ENABLED.")
+        except Exception as e:
+            logger.info("GPU acceleration unavailable (%s); using CPU mode.", e)
+            use_gpu = False
+            cb_task_type = "CPU"
+            cb_thread_count = 2
+    else:
+        logger.info("Configuring models for CPU mode (thread_count=%s).", cb_thread_count)
+
+    # 4. LightGBM Regressor (MAE objective)
+    pred_lgb_val = None
+    pred_lgb_test = None
+    lgb_model = None
     if HAS_LIGHTGBM:
         try:
-            X_train_lgb = X_train.copy()
-            X_val_lgb = X_val.copy()
-            X_test_lgb = X_test.copy()
-            for c in CATEGORICAL_FEATURES:
-                X_train_lgb[c] = X_train_lgb[c].astype("category")
-                X_val_lgb[c] = X_val_lgb[c].astype("category")
-                X_test_lgb[c] = X_test_lgb[c].astype("category")
-                cats = X_train_lgb[c].cat.categories
-                X_val_lgb[c] = X_val_lgb[c].cat.set_categories(cats)
-                X_test_lgb[c] = X_test_lgb[c].cat.set_categories(cats)
-
-            lgb_model = lgb.LGBMRegressor(
-                n_estimators=500,
-                learning_rate=0.05,
-                num_leaves=31,
-                random_state=42,
-                verbosity=-1,
-            )
+            logger.info("Training LightGBM Regressor with MAE objective...")
+            lgb_kwargs = {
+                "n_estimators": 350,
+                "learning_rate": 0.04,
+                "max_depth": 7,
+                "objective": "mae",
+                "random_state": 42,
+                "verbosity": -1,
+            }
+            if use_gpu:
+                lgb_kwargs["device"] = "gpu"
+            lgb_model = lgb.LGBMRegressor(**lgb_kwargs)
             lgb_model.fit(
-                X_train_lgb,
+                X_train_enc,
                 y_train,
-                eval_set=[(X_val_lgb, y_val)],
+                eval_set=[(X_val_enc, y_val)],
                 callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)],
             )
-            pred_lgb_val = lgb_model.predict(X_val_lgb)
-            pred_lgb_test = lgb_model.predict(X_test_lgb)
+            pred_lgb_val = lgb_model.predict(X_val_enc)
+            pred_lgb_test = lgb_model.predict(X_test_enc)
             record_benchmark("LightGBM", pred_lgb_val, pred_lgb_test)
+
+            lgb_path = output_dir / "lightgbm_model.txt"
+            lgb_model.booster_.save_model(str(lgb_path))
+            logger.info("Exported native LightGBM model to %s", lgb_path)
         except Exception as e:
             logger.warning("LightGBM training failed: %s", e)
 
-    # 5. Production CatBoost Regressor (Strict loss_function='MAE')
+    # 5. XGBoost Regressor (MAE objective & hist categorical support)
+    pred_xgb_val = None
+    pred_xgb_test = None
+    xgb_model = None
+    if HAS_XGBOOST:
+        try:
+            logger.info("Training XGBoost Regressor with MAE objective...")
+            xgb_kwargs = {
+                "n_estimators": 300,
+                "learning_rate": 0.04,
+                "max_depth": 6,
+                "objective": "reg:absoluteerror",
+                "tree_method": "hist",
+                "enable_categorical": True,
+                "random_state": 42,
+            }
+            if use_gpu:
+                xgb_kwargs["device"] = "cuda"
+            xgb_model = xgb.XGBRegressor(**xgb_kwargs)
+            xgb_model.fit(
+                X_train_enc,
+                y_train,
+                eval_set=[(X_val_enc, y_val)],
+                verbose=False,
+            )
+            pred_xgb_val = xgb_model.predict(X_val_enc)
+            pred_xgb_test = xgb_model.predict(X_test_enc)
+            record_benchmark("XGBoost", pred_xgb_val, pred_xgb_test)
+
+            xgb_path = output_dir / "xgboost_model.json"
+            xgb_model.save_model(str(xgb_path))
+            logger.info("Exported native XGBoost model to %s", xgb_path)
+        except Exception as e:
+            logger.warning("XGBoost training failed: %s", e)
+
+    # 6. Production CatBoost Regressor (Strict loss_function='MAE')
     logger.info("Training production CatBoost Regressor with loss_function='MAE'...")
     cat_indices = [X_train.columns.get_loc(c) for c in CATEGORICAL_FEATURES]
 
@@ -413,33 +494,9 @@ def main():
     val_pool = Pool(X_val_cb, y_val, cat_features=cat_indices)
     test_pool = Pool(X_test_cb, cat_features=cat_indices)
 
-    is_ci = bool(os.environ.get("CI"))
-    force_cpu = (args.device.lower() == "cpu") or is_ci
-
-    cb_task_type = "CPU"
-    cb_thread_count = 2
-
-    if not force_cpu and args.device.lower() in ("cuda", "gpu"):
-        try:
-            test_cb = CatBoostRegressor(iterations=1, task_type="GPU", verbose=0)
-            test_cb.fit(np.array([[1.0]]), np.array([1.0]))
-            cb_task_type = "GPU"
-            cb_thread_count = None
-            logger.info("CatBoost GPU acceleration enabled.")
-        except Exception as e:
-            logger.warning("GPU acceleration unavailable (%s); falling back to CPU.", e)
-            cb_task_type = "CPU"
-            cb_thread_count = 2
-    else:
-        logger.info(
-            "Configuring CatBoost for task_type=%s, thread_count=%s (CI / CPU memory safety).",
-            cb_task_type,
-            cb_thread_count,
-        )
-
     cb_kwargs: Dict[str, Any] = {
-        "iterations": 1000,
-        "learning_rate": 0.05,
+        "iterations": 1200,
+        "learning_rate": 0.04,
         "depth": 6,
         "loss_function": "MAE",
         "eval_metric": "MAE",
@@ -456,39 +513,68 @@ def main():
 
     pred_cb_val = cb_model.predict(val_pool)
     pred_cb_test = cb_model.predict(test_pool)
-    record_benchmark("CatBoost (Selected)", pred_cb_val, pred_cb_test)
+    record_benchmark("CatBoost", pred_cb_val, pred_cb_test)
+
+    cbm_model_path = output_dir / "catboost_model.cbm"
+    cb_model.save_model(str(cbm_model_path))
+    logger.info("Exported native CatBoost model to %s (format: .cbm, no pickle)", cbm_model_path)
+
+    # 7. Champion Blended Ensemble (0.50 CatBoost + 0.30 XGBoost + 0.20 LightGBM)
+    logger.info("Building Champion Blended Ensemble (50%% CatBoost + 30%% XGBoost + 20%% LightGBM)...")
+    pred_ens_val = pred_cb_val.copy()
+    pred_ens_test = pred_cb_test.copy()
+
+    if pred_xgb_val is not None and pred_lgb_val is not None:
+        pred_ens_val = 0.50 * pred_cb_val + 0.30 * pred_xgb_val + 0.20 * pred_lgb_val
+        pred_ens_test = 0.50 * pred_cb_test + 0.30 * pred_xgb_test + 0.20 * pred_lgb_test
+    elif pred_xgb_val is not None:
+        pred_ens_val = 0.60 * pred_cb_val + 0.40 * pred_xgb_val
+        pred_ens_test = 0.60 * pred_cb_test + 0.40 * pred_xgb_test
+    elif pred_lgb_val is not None:
+        pred_ens_val = 0.70 * pred_cb_val + 0.30 * pred_lgb_val
+        pred_ens_test = 0.70 * pred_cb_test + 0.30 * pred_lgb_test
+
+    record_benchmark("Blended Ensemble (Champion)", pred_ens_val, pred_ens_test)
 
     # Export comparison table to models/model_comparison.csv
     results_df = pd.DataFrame(results).sort_values("MAE_MAD").reset_index(drop=True)
     comparison_path = output_dir / "model_comparison.csv"
     results_df.to_csv(comparison_path, index=False)
     logger.info("Model comparison results saved to %s", comparison_path)
-    print("\n" + "="*80)
-    print("MODEL COMPARISON REPORT (Autohouse.ma Cahier des Charges)")
-    print("="*80)
+    print("\n" + "=" * 80)
+    print("🏆 === MODEL LEADERBOARD (SORTED BY TEST MAE) ===")
+    print("=" * 80)
     print(results_df.to_string(index=False))
-    print("="*80 + "\n")
+    print("=" * 80 + "\n")
 
-    # Check and summarize target threshold status for CatBoost
-    cb_row = results_df[results_df["model"] == "CatBoost (Selected)"].iloc[0]
-    if cb_row["meets_target_<20%"]:
-        logger.info(">>> Production CatBoost model PASSED the target threshold with Test MAPE: %.2f%% (< 20%%)", cb_row["MAPE_%"])
-    else:
-        logger.warning(">>> Production CatBoost model Test MAPE is %.2f%% (target is < 20%%). Continued scraping will reduce error.", cb_row["MAPE_%"])
-
-    # Export production model strictly in native .cbm format (NO pickle)
-    cbm_model_path = output_dir / "catboost_model.cbm"
-    cb_model.save_model(str(cbm_model_path))
-    logger.info("Exported native CatBoost model to %s (format: .cbm, no pickle)", cbm_model_path)
-
-    # 6. Generate Complete Dataset Predictions & Market Deal Ratings (matching notebook logic)
-    logger.info("Generating predictions and market deal ratings across complete dataset...")
+    # 8. Full Dataset Inference & Market Deal Ratings with URL
+    logger.info("Generating Champion Ensemble predictions across complete dataset...")
     X_full = df[feature_cols].copy()
     for c in CATEGORICAL_FEATURES:
         X_full[c] = X_full[c].fillna("Inconnu").astype(str)
 
     full_pool = Pool(X_full, cat_features=cat_indices)
-    predicted_prices = np.round(cb_model.predict(full_pool), 2)
+    p_cb_full = cb_model.predict(full_pool)
+
+    # Prepare aligned dataset for XGBoost and LightGBM
+    X_full_enc = df[feature_cols].copy()
+    for c in CATEGORICAL_FEATURES:
+        cats = X_train_enc[c].cat.categories
+        X_full_enc[c] = pd.Categorical(X_full_enc[c].fillna("Inconnu"), categories=cats)
+
+    p_ens_full = p_cb_full.copy()
+    if xgb_model is not None and lgb_model is not None:
+        p_xgb_full = xgb_model.predict(X_full_enc)
+        p_lgb_full = lgb_model.predict(X_full_enc)
+        p_ens_full = 0.50 * p_cb_full + 0.30 * p_xgb_full + 0.20 * p_lgb_full
+    elif xgb_model is not None:
+        p_xgb_full = xgb_model.predict(X_full_enc)
+        p_ens_full = 0.60 * p_cb_full + 0.40 * p_xgb_full
+    elif lgb_model is not None:
+        p_lgb_full = lgb_model.predict(X_full_enc)
+        p_ens_full = 0.70 * p_cb_full + 0.30 * p_lgb_full
+
+    predicted_prices = np.round(p_ens_full, 2)
 
     df_predictions = df.copy()
     df_predictions["predicted_price_mad"] = predicted_prices
@@ -509,8 +595,10 @@ def main():
         ),
     )
 
+    # Strictly position url as the second column
     prediction_cols = [
         "listing_id",
+        "url",
         "brand",
         "model",
         "year",
@@ -551,7 +639,7 @@ def main():
     print("\n" + "=" * 80)
     print("MARKET DEAL ANALYSIS PREVIEW (Sample Top Deals):")
     print("=" * 80)
-    print(predictions_df[["listing_id", "brand", "model", "year", "price_mad", "predicted_price_mad", "deviation_percentage_%", "market_deal_rating"]].head(10).to_string(index=False))
+    print(predictions_df[["listing_id", "url", "brand", "model", "year", "price_mad", "predicted_price_mad", "deviation_percentage_%", "market_deal_rating"]].head(10).to_string(index=False))
     print("=" * 80)
 
 

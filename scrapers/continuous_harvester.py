@@ -39,6 +39,9 @@ try:
         SCHEMA_FIELDS,
         TRACKING_DIR,
         SEEN_IDS_FILE,
+        PROGRESS_FILE,
+        load_scraping_progress,
+        update_scraping_progress,
         load_seen_listing_ids,
         append_seen_listing_ids,
         clean_brand_and_model,
@@ -52,6 +55,9 @@ except ImportError:
         SCHEMA_FIELDS,
         TRACKING_DIR,
         SEEN_IDS_FILE,
+        PROGRESS_FILE,
+        load_scraping_progress,
+        update_scraping_progress,
         load_seen_listing_ids,
         append_seen_listing_ids,
         clean_brand_and_model,
@@ -371,8 +377,10 @@ def run_continuous_harvest(
                         seen_ids.add(lid)
                         batch_buffer.append(r)
                     logger.info("[Moteur] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_moteur), moteur_page, len(batch_buffer))
+                    update_scraping_progress("moteur", moteur_page, len(new_moteur))
                 else:
                     logger.info("[Moteur] Page %d had %d listings, all already seen. Advancing deeper into catalog...", moteur_page, len(moteur_batch))
+                    update_scraping_progress("moteur", moteur_page, 0)
 
                 # Advance cursor deeper into historical listings
                 moteur_page += 1
@@ -416,8 +424,10 @@ def run_continuous_harvest(
                         seen_ids.add(lid)
                         batch_buffer.append(r)
                     logger.info("[Wandaloo] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_wandaloo), wandaloo_page, len(batch_buffer))
+                    update_scraping_progress("wandaloo", wandaloo_page, len(new_wandaloo))
                 else:
                     logger.info("[Wandaloo] Page %d had %d listings, all already seen. Advancing deeper into catalog...", wandaloo_page, len(wandaloo_batch))
+                    update_scraping_progress("wandaloo", wandaloo_page, 0)
 
                 # Advance cursor deeper into historical listings
                 wandaloo_page += 1

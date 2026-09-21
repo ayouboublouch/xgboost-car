@@ -12,6 +12,7 @@ Enforces:
 import abc
 import datetime
 import hashlib
+import json
 import logging
 import random
 import re
@@ -424,6 +425,53 @@ USER_AGENTS = [
 
 TRACKING_DIR = Path("data/tracking")
 SEEN_IDS_FILE = TRACKING_DIR / "seen_listing_ids.txt"
+PROGRESS_FILE = TRACKING_DIR / "scraping_progress.json"
+
+
+def load_scraping_progress(filepath: Optional[Path] = None) -> Dict[str, Any]:
+    """Load per-platform scraping progress dictionary from JSON."""
+    path = Path(filepath or PROGRESS_FILE)
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning("Could not read scraping progress from %s: %s", path, e)
+    return {
+        "moteur": {"last_page": 1, "total_scraped": 0, "last_updated": None},
+        "wandaloo": {"last_page": 1, "total_scraped": 0, "last_updated": None},
+        "avito": {"last_page": 1, "total_scraped": 0, "last_updated": None},
+    }
+
+
+def update_scraping_progress(
+    source: str,
+    last_page: int,
+    count_added: int = 0,
+    filepath: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Update and persist progress statistics for a given platform."""
+    path = Path(filepath or PROGRESS_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    progress = load_scraping_progress(path)
+
+    src_key = source.lower().replace(".ma", "").strip()
+    if src_key not in progress:
+        progress[src_key] = {"last_page": 1, "total_scraped": 0, "last_updated": None}
+
+    current_total = progress[src_key].get("total_scraped", 0)
+    progress[src_key]["last_page"] = max(last_page, progress[src_key].get("last_page", 1))
+    progress[src_key]["total_scraped"] = current_total + count_added
+    progress[src_key]["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(progress, f, indent=2, ensure_ascii=False)
+        logger.info("Updated scraping progress for %s: last_page=%d | total=%d", src_key, progress[src_key]["last_page"], progress[src_key]["total_scraped"])
+    except Exception as e:
+        logger.warning("Could not write scraping progress to %s: %s", path, e)
+
+    return progress
 
 
 def load_seen_listing_ids(filepath: Optional[Path] = None) -> Set[str]:

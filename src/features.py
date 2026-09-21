@@ -221,6 +221,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
         )
         logger.info("Bucketed %d rare models into '<brand>_other'", len(rare_models))
 
+    if "url" not in df.columns:
+        df["url"] = None
+
     logger.info("Feature engineering completed. Total columns: %d", len(df.columns))
     return df
 

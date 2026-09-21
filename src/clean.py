@@ -503,6 +503,13 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             keep_part = df[~valid_url_mask]
             df = pd.concat([dedup_part, keep_part], ignore_index=True)
 
+    # Preserve and clean listing URLs
+    if "url" not in df.columns:
+        df["url"] = None
+    else:
+        df["url"] = df["url"].astype(str).str.strip().str.replace(r"[\r\n\t]+", "", regex=True)
+        df.loc[df["url"].isin(["nan", "None", "", "<NA>"]), "url"] = None
+
     logger.info("Rows after within-source deduplication: %d", len(df))
 
     # Backfill / Harmonize seller phone numbers and privacy hashes
