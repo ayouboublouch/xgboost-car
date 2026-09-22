@@ -20,21 +20,15 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix:
         include:
           - start_page: 1
-            max_pages: 45
-            page_label: "pages 1-45"
-          - start_page: 46
-            max_pages: 45
-            page_label: "pages 46-90"
-          - start_page: 91
-            max_pages: 45
-            page_label: "pages 91-135"
-          - start_page: 136
-            max_pages: 45
-            page_label: "pages 136-180"
+            max_pages: 22
+            page_label: "pages 1-22 (General & Showrooms)"
+          - start_page: 23
+            max_pages: 23
+            page_label: "pages 23-45 (Deep Catalog)"
 
     steps:
       - name: Checkout repository
@@ -152,7 +146,7 @@ jobs:
           git status
           git add data/
           if ! git diff --staged --quiet; then
-            git commit -m "feat(ingestion): persist dedicated Wandaloo 180-page batch [skip ci]"
+            git commit -m "feat(ingestion): persist dedicated Wandaloo 45-page batch [skip ci]"
             for i in 1 2 3 4 5; do
               echo "Attempt $i: syncing and pushing to origin main..."
               git stash push --include-untracked -m "ci-temp-stash" || true
