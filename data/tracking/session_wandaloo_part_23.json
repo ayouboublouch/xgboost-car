@@ -1,0 +1,19 @@
+{
+  "session_id": "sess_20260922_165145_wandaloo",
+  "scraper_name": "parallel_worker",
+  "source": "wandaloo",
+  "start_time": "2026-09-22 16:51:36",
+  "end_time": "2026-09-22 16:51:45",
+  "duration_seconds": 8.59,
+  "pages_scraped": 23,
+  "page_range": {
+    "start": 23,
+    "end": 45
+  },
+  "records_extracted": 32,
+  "records_added": 32,
+  "duplicates_skipped": 0,
+  "cumulative_seen_ids": 13229,
+  "status": "success",
+  "notes": "Parallel chunk part 23"
+}
