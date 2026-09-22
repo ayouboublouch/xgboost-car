@@ -74,6 +74,8 @@ DEFAULT_BROWSER_HEADERS = {
 class WandalooScraper(BaseScraper):
     source_name = "wandaloo"
     BASE_URL = "https://www.wandaloo.com/occasion/"
+    SHOWROOM_URL = "https://www.wandaloo.com/occasion/?vendeur=2"
+    GARAGES_URL = "https://www.wandaloo.com/occasion/garages/"
 
     def __init__(
         self,
@@ -90,7 +92,7 @@ class WandalooScraper(BaseScraper):
         )
 
     def extract_phone_from_detail(self, detail_url: str, session: Optional[Any] = None) -> Optional[str]:
-        """Fetch listing page (/occasion/...html) and parse seller contact details with timeout=(5, 10)."""
+        """Fetch listing page (/occasion/...html) and parse seller contact details with resilient timeout."""
         if not detail_url:
             return None
         try:
@@ -98,13 +100,21 @@ class WandalooScraper(BaseScraper):
             html = None
             if s is not None:
                 try:
-                    resp = s.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=(5, 10), verify=False)
+                    resp = s.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=(6, 12), verify=False)
                     if resp.status_code == 200:
                         html = resp.text
                 except Exception:
                     html = None
             if not html:
-                html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=(5, 10), max_retries=1)
+                try:
+                    import requests as std_requests
+                    r = std_requests.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=10)
+                    if r.status_code == 200:
+                        html = r.text
+                except Exception:
+                    html = None
+            if not html:
+                html = self.fetch_page(detail_url, headers=DEFAULT_BROWSER_HEADERS, timeout=(6, 12), max_retries=1)
             if not html:
                 return None
 
@@ -155,9 +165,9 @@ class WandalooScraper(BaseScraper):
 
     def parse_card_regex(self, block: str, date_scraped: str) -> Optional[Dict[str, Any]]:
         """Extract Wandaloo listing card fields via regex."""
-        link_m = re.search(r'href=["\'](https://www\.wandaloo\.com/occasion/[^"\']+/(\d+)\.html)["\']', block)
+        link_m = re.search(r'href=["\'](https?://(?:www\.)?wandaloo\.com/occasion/[^"\']+/(\d+)\.html)["\']', block, re.IGNORECASE)
         if not link_m:
-            link_m = re.search(r'href=["\'](/occasion/[^"\']+/(\d+)\.html)["\']', block)
+            link_m = re.search(r'href=["\'](/occasion/[^"\']+/(\d+)\.html)["\']', block, re.IGNORECASE)
             if link_m:
                 url = "https://www.wandaloo.com" + link_m.group(1)
                 listing_id = link_m.group(2)
@@ -403,33 +413,80 @@ class WandalooScraper(BaseScraper):
 
         return records
 
-    def scrape_page(self, page_num: int) -> List[Dict[str, Any]]:
-        """Fetch and parse one page from Wandaloo used car section."""
+    def scrape_page(
+        self,
+        page_num: int,
+        is_showroom: bool = False,
+        custom_url: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch and parse one page from Wandaloo.
+        Supports both general used cars (?page={p}&pg={p}) and showroom/garage inventories.
+        """
         date_scraped = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        url = f"{self.BASE_URL}?pg={page_num}" if page_num > 1 else self.BASE_URL
 
-        html = self.fetch_page(url, headers=DEFAULT_BROWSER_HEADERS)
+        if custom_url:
+            # Map /occasion/garages/ or dealer URLs directly to showroom pro feed
+            if "/garages" in custom_url.lower():
+                url = f"{self.SHOWROOM_URL}&page={page_num}&pg={page_num}" if page_num > 1 else self.SHOWROOM_URL
+            else:
+                url = custom_url
+        elif is_showroom:
+            url = f"{self.SHOWROOM_URL}&page={page_num}&pg={page_num}" if page_num > 1 else f"{self.SHOWROOM_URL}&pg=1"
+        else:
+            url = f"{self.BASE_URL}?page={page_num}&pg={page_num}" if page_num > 1 else self.BASE_URL
+
+        html = self.fetch_page(url, headers=DEFAULT_BROWSER_HEADERS, timeout=(10, 20))
         if not html:
-            logger.warning("[%s] Failed to fetch page %d", self.source_name, page_num)
+            try:
+                import requests as std_requests
+                resp = std_requests.get(url, headers=DEFAULT_BROWSER_HEADERS, timeout=15)
+                if resp.status_code == 200:
+                    html = resp.text
+            except Exception as e:
+                logger.debug("[%s] Requests fallback error for %s: %s", self.source_name, url, e)
+
+        if not html:
+            logger.warning("[%s] Failed to fetch page %d (url: %s)", self.source_name, page_num, url)
             return []
 
         records = self.parse_page(html, date_scraped)
-        logger.info("[%s] Page %d: parsed %d listings", self.source_name, page_num, len(records))
+        feed_type = "Showroom" if is_showroom else "Catalog"
+        logger.info("[%s] %s Page %d: parsed %d listings", self.source_name, feed_type, page_num, len(records))
         return records
 
-    def scrape(self, max_pages: int = 40, start_page: int = 1, output_filename: Optional[str] = None, **kwargs) -> pd.DataFrame:
-        """Crawl Wandaloo used car listings for up to max_pages starting from start_page."""
+    def scrape(
+        self,
+        max_pages: int = 45,
+        start_page: int = 1,
+        output_filename: Optional[str] = None,
+        include_showrooms: bool = True,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Crawl Wandaloo used car listings for up to max_pages starting from start_page.
+        Also crawls professional showroom / dealer feeds (vendeur=2) when start_page == 1
+        or when include_showrooms is enabled to ensure complete showroom coverage.
+        """
         end_page = start_page + max_pages - 1
-        logger.info("[%s] Starting crawl for pages %d to %d (max %d pages) ...", self.source_name, start_page, end_page, max_pages)
+        logger.info(
+            "[%s] Starting crawl for pages %d to %d (max %d pages, include_showrooms=%s) ...",
+            self.source_name,
+            start_page,
+            end_page,
+            max_pages,
+            include_showrooms,
+        )
         all_records: List[Dict[str, Any]] = []
 
+        # 1. Harvest general catalog listings (pages start_page to end_page)
         consecutive_empty = 0
         for p in range(start_page, start_page + max_pages):
-            batch = self.scrape_page(p)
+            batch = self.scrape_page(p, is_showroom=False)
             if not batch:
                 consecutive_empty += 1
                 if consecutive_empty >= 3:
-                    logger.info("[%s] 3 consecutive empty pages at page %d. Stopping.", self.source_name, p)
+                    logger.info("[%s] 3 consecutive empty pages at page %d. Stopping general catalog.", self.source_name, p)
                     break
             else:
                 consecutive_empty = 0
@@ -437,11 +494,32 @@ class WandalooScraper(BaseScraper):
 
             self.sleep()
 
+        # 2. Harvest professional showroom dealer inventories
+        if include_showrooms and start_page == 1:
+            logger.info("[%s] Ingesting dedicated showroom dealer inventory feed (vendeur=2)...", self.source_name)
+            consecutive_empty_pro = 0
+            max_pro_pages = min(max_pages, 20)
+            for p in range(1, max_pro_pages + 1):
+                batch = self.scrape_page(p, is_showroom=True)
+                if not batch:
+                    consecutive_empty_pro += 1
+                    if consecutive_empty_pro >= 2:
+                        break
+                else:
+                    consecutive_empty_pro = 0
+                    all_records.extend(batch)
+                self.sleep()
+
         if len(all_records) == 0:
             logger.warning("[%s] Crawl complete. 0 records harvested. Writing nothing.", self.source_name)
             return pd.DataFrame()
 
         df = pd.DataFrame(all_records)
+        if "listing_id" in df.columns:
+            initial_len = len(df)
+            df = df.drop_duplicates(subset=["listing_id"]).reset_index(drop=True)
+            logger.info("[%s] Deduplicated from %d to %d unique listings.", self.source_name, initial_len, len(df))
+
         logger.info("[%s] Crawl complete. Total records: %d", self.source_name, len(df))
         self.save_output(df, custom_filename=output_filename)
         return df
@@ -449,13 +527,21 @@ class WandalooScraper(BaseScraper):
 
 def main():
     parser = argparse.ArgumentParser(description="Wandaloo.com Production Scraper")
-    parser.add_argument("--max-pages", type=int, default=40, help="Max pages to scrape (default: 40)")
+    parser.add_argument("--start-page", type=int, default=1, help="Initial page to scrape (default: 1)")
+    parser.add_argument("--max-pages", type=int, default=45, help="Max pages to scrape (default: 45)")
+    parser.add_argument("--output-filename", type=str, default=None, help="Custom output CSV filename (e.g. test_wandaloo.csv)")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
+    parser.add_argument("--no-showrooms", action="store_true", help="Disable dealer showroom inventory feed")
     args = parser.parse_args()
 
     scraper = WandalooScraper(output_dir=args.output_dir)
-    df = scraper.scrape(max_pages=args.max_pages)
-    print(f"Successfully scraped and saved {len(df)} records for Wandaloo.ma")
+    df = scraper.scrape(
+        max_pages=args.max_pages,
+        start_page=args.start_page,
+        output_filename=args.output_filename,
+        include_showrooms=not args.no_showrooms,
+    )
+    print(f"Successfully scraped and saved {len(df)} records for Wandaloo.com")
 
 
 if __name__ == "__main__":
