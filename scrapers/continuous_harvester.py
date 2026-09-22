@@ -321,9 +321,10 @@ def aggregate_parallel_worker_batches(
 ) -> Path:
     """
     Consolidate downloaded artifacts from parallel scraper workers:
-    1. Distribute raw CSVs to data/raw/
+    1. Recursively find and move raw CSVs and Parquets from data/downloads/ to data/raw/
     2. Aggregate chunk session JSONs into data/tracking/scraping_sessions.jsonl and progress.json
-    3. Update master database parquet and synchronize seen_listing_ids.txt
+    3. Remove temporary data/downloads/ directory
+    4. Update master database parquet and synchronize seen_listing_ids.txt
     """
     import shutil
     dl_path = Path(downloads_dir)
@@ -333,45 +334,78 @@ def aggregate_parallel_worker_batches(
     t_path.mkdir(parents=True, exist_ok=True)
 
     if dl_path.exists():
-        # Move raw data CSVs
-        for csv_f in dl_path.glob("scraped_*"):
-            dest = r_path / csv_f.name
-            shutil.move(str(csv_f), str(dest))
-            logger.info("Ingested chunk raw CSV: %s", dest.name)
+        # Move raw data CSVs and Parquets from any nested directory
+        for raw_f in list(dl_path.rglob("scraped_*")):
+            if raw_f.is_file() and raw_f.suffix in [".csv", ".parquet"]:
+                dest = r_path / raw_f.name
+                shutil.move(str(raw_f), str(dest))
+                logger.info("Moved chunk raw file: %s -> %s", raw_f.name, dest)
 
-        # Merge session telemetry JSONs
-        session_files = sorted(list(dl_path.glob("session_*.json")))
+        # Merge session telemetry JSONs from any nested directory
+        session_files = sorted(list(dl_path.rglob("session_*.json")))
         for sf_path in session_files:
-            try:
-                with open(sf_path, "r", encoding="utf-8") as sf:
-                    sess_data = json.load(sf)
+            if sf_path.is_file():
+                try:
+                    with open(sf_path, "r", encoding="utf-8") as sf:
+                        sess_data = json.load(sf)
 
-                # Append to scraping_sessions.jsonl
+                    # Append to scraping_sessions.jsonl
+                    with open(SESSIONS_FILE, "a", encoding="utf-8") as f_out:
+                        f_out.write(json.dumps(sess_data, ensure_ascii=False) + "\n")
+
+                    # Update scraping_progress.json
+                    progress = load_scraping_progress()
+                    if "recent_sessions" not in progress or not isinstance(progress["recent_sessions"], list):
+                        progress["recent_sessions"] = []
+                    progress["recent_sessions"].append(sess_data)
+                    progress["recent_sessions"] = progress["recent_sessions"][-20:]
+
+                    src = sess_data.get("source")
+                    if src:
+                        if src not in progress:
+                            progress[src] = {"last_page": 1, "total_scraped": 0, "last_updated": ""}
+                        end_p = sess_data.get("page_range", {}).get("end", 1)
+                        progress[src]["last_page"] = max(progress[src].get("last_page", 1), end_p)
+                        progress[src]["total_scraped"] = progress[src].get("total_scraped", 0) + sess_data.get("records_added", 0)
+                        progress[src]["last_updated"] = sess_data.get("end_time", "")
+
+                    with open(PROGRESS_FILE, "w", encoding="utf-8") as pf:
+                        json.dump(progress, pf, indent=2, ensure_ascii=False)
+
+                    # Move session file to tracking dir
+                    dest_sess = t_path / sf_path.name
+                    shutil.move(str(sf_path), str(dest_sess))
+                    logger.info("Merged session telemetry from: %s", sf_path.name)
+                except Exception as e:
+                    logger.warning("Could not merge session telemetry from %s: %s", sf_path.name, e)
+
+        # Clean up downloads directory
+        try:
+            shutil.rmtree(str(dl_path), ignore_errors=True)
+            logger.info("Cleaned up temporary downloads directory: %s", dl_path)
+        except Exception as e:
+            logger.debug("Could not remove downloads directory: %s", e)
+
+    # Check for any standalone session_*.json files in tracking_dir directly
+    for sf_path in sorted(list(t_path.glob("session_*.json"))):
+        try:
+            with open(sf_path, "r", encoding="utf-8") as sf:
+                sess_data = json.load(sf)
+            sid = sess_data.get("session_id")
+            existing_sids = set()
+            if SESSIONS_FILE.exists():
+                with open(SESSIONS_FILE, "r", encoding="utf-8", errors="ignore") as f_in:
+                    for line in f_in:
+                        try:
+                            existing_sids.add(json.loads(line).get("session_id"))
+                        except Exception:
+                            pass
+            if sid and sid not in existing_sids:
                 with open(SESSIONS_FILE, "a", encoding="utf-8") as f_out:
                     f_out.write(json.dumps(sess_data, ensure_ascii=False) + "\n")
-
-                # Update scraping_progress.json
-                progress = load_scraping_progress()
-                if "recent_sessions" not in progress or not isinstance(progress["recent_sessions"], list):
-                    progress["recent_sessions"] = []
-                progress["recent_sessions"].append(sess_data)
-                progress["recent_sessions"] = progress["recent_sessions"][-20:]
-
-                src = sess_data.get("source")
-                if src:
-                    if src not in progress:
-                        progress[src] = {"last_page": 1, "total_scraped": 0, "last_updated": ""}
-                    end_p = sess_data.get("page_range", {}).get("end", 1)
-                    progress[src]["last_page"] = max(progress[src].get("last_page", 1), end_p)
-                    progress[src]["total_scraped"] = progress[src].get("total_scraped", 0) + sess_data.get("records_added", 0)
-                    progress[src]["last_updated"] = sess_data.get("end_time", "")
-
-                with open(PROGRESS_FILE, "w", encoding="utf-8") as pf:
-                    json.dump(progress, pf, indent=2, ensure_ascii=False)
-
-                logger.info("Merged session telemetry from: %s", sf_path.name)
-            except Exception as e:
-                logger.warning("Could not merge session telemetry from %s: %s", sf_path.name, e)
+                logger.info("Appended unmerged tracking session: %s", sf_path.name)
+        except Exception as e:
+            logger.warning("Error checking session file %s: %s", sf_path.name, e)
 
     # Consolidate master parquet database and synchronize seen_ids
     return update_master_database(r_path)

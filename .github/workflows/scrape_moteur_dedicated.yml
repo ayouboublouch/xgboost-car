@@ -120,10 +120,28 @@ jobs:
           path: data/downloads
           merge-multiple: true
 
+      - name: Move partition artifacts into data/raw/ and data/tracking/
+        run: |
+          mkdir -p data/raw data/tracking
+          echo "Inspecting data/downloads before move:"
+          find data/downloads -type f || true
+
+          # Move all scraped chunk data files (CSV & Parquet) directly into data/raw/
+          find data/downloads -type f \( -name "scraped_moteur_part_*.csv" -o -name "scraped_moteur_part_*.parquet" \) -exec mv -v {} data/raw/ \; || true
+
+          # Move all session telemetry files directly into data/tracking/
+          find data/downloads -type f -name "session_moteur_part_*.json" -exec mv -v {} data/tracking/ \; || true
+
+          # Delete downloads directory
+          rm -rf data/downloads
+
+          echo "Verified data/raw contents:"
+          ls -la data/raw/
+          echo "Verified data/tracking contents:"
+          ls -la data/tracking/
+
       - name: Consolidate scraped chunks, telemetry, and master database
         run: |
-          mkdir -p data/raw data/tracking data/downloads
-          ls -la data/downloads/ || true
           python -c "from scrapers.continuous_harvester import aggregate_parallel_worker_batches; p = aggregate_parallel_worker_batches(); print('Consolidated into:', p)"
 
       - name: Commit and push newly collected data
