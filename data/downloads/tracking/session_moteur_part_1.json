@@ -1,0 +1,19 @@
+{
+  "session_id": "sess_20260922_150855_moteur",
+  "scraper_name": "parallel_worker",
+  "source": "moteur",
+  "start_time": "2026-09-22 15:04:46",
+  "end_time": "2026-09-22 15:08:55",
+  "duration_seconds": 248.52,
+  "pages_scraped": 90,
+  "page_range": {
+    "start": 1,
+    "end": 90
+  },
+  "records_extracted": 2694,
+  "records_added": 2694,
+  "duplicates_skipped": 0,
+  "cumulative_seen_ids": 11029,
+  "status": "success",
+  "notes": "Parallel chunk part 1"
+}
