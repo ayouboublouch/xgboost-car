@@ -1,0 +1,19 @@
+{
+  "session_id": "sess_20260922_144036_avito",
+  "scraper_name": "parallel_worker",
+  "source": "avito",
+  "start_time": "2026-09-22 14:36:26",
+  "end_time": "2026-09-22 14:40:36",
+  "duration_seconds": 250.03,
+  "pages_scraped": 40,
+  "page_range": {
+    "start": 25,
+    "end": 64
+  },
+  "records_extracted": 0,
+  "records_added": 0,
+  "duplicates_skipped": 0,
+  "cumulative_seen_ids": 10836,
+  "status": "empty",
+  "notes": "Parallel chunk part 25"
+}
