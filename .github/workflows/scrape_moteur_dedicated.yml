@@ -1,0 +1,161 @@
+name: Dedicated Moteur.ma Cloud Scraper (Pages 1-350)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4,16 * * *'
+
+concurrency:
+  group: scrape-moteur-dedicated
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  scrape-moteur:
+    name: Moteur (${{ matrix.page_label }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - start_page: 1
+            max_pages: 90
+            page_label: "pages 1-90"
+          - start_page: 91
+            max_pages: 90
+            page_label: "pages 91-180"
+          - start_page: 181
+            max_pages: 90
+            page_label: "pages 181-270"
+          - start_page: 271
+            max_pages: 80
+            page_label: "pages 271-350"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'scrapers/requirements_scraper.txt'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev build-essential
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scrapers/requirements_scraper.txt || pip install requests beautifulsoup4 lxml pandas pyarrow fake-useragent curl_cffi
+
+      - name: Environment Diagnostics
+        run: |
+          python -c "import sys; print('Python version:', sys.version)"
+          python scrapers/moteur_scraper.py --help || true
+
+      - name: Run Dedicated Scraper for Moteur.ma (${{ matrix.page_label }})
+        id: run_scraper
+        continue-on-error: true
+        run: |
+          mkdir -p data/raw data/tracking
+          python scrapers/run_all.py \
+            --source moteur \
+            --start-page ${{ matrix.start_page }} \
+            --max-pages ${{ matrix.max_pages }} \
+            --output-filename "scraped_moteur_part_${{ matrix.start_page }}.csv"
+
+      - name: Upload Scraped Moteur Chunk & Telemetry
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moteur-chunk-${{ matrix.start_page }}
+          path: |
+            data/raw/scraped_moteur_part_${{ matrix.start_page }}.*
+            data/tracking/session_moteur_part_${{ matrix.start_page }}.json
+          if-no-files-found: ignore
+
+  aggregate-and-commit:
+    name: Aggregate Moteur Chunks & Retrain
+    needs: scrape-moteur
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: write
+    if: always()
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: 'scrapers/requirements_scraper.txt'
+
+      - name: Install dependencies for consolidation
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scrapers/requirements_scraper.txt || pip install requests beautifulsoup4 lxml pandas pyarrow fake-useragent curl_cffi
+
+      - name: Download all scraped Moteur chunks
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: moteur-chunk-*
+          path: data/downloads
+          merge-multiple: true
+
+      - name: Consolidate scraped chunks, telemetry, and master database
+        run: |
+          mkdir -p data/raw data/tracking data/downloads
+          ls -la data/downloads/ || true
+          python -c "from scrapers.continuous_harvester import aggregate_parallel_worker_batches; p = aggregate_parallel_worker_batches(); print('Consolidated into:', p)"
+
+      - name: Commit and push newly collected data
+        id: commit
+        run: |
+          git config --global user.name "autohouse-harvester[bot]"
+          git config --global user.email "harvester@users.noreply.github.com"
+          git status
+          git add data/
+          if ! git diff --staged --quiet; then
+            git commit -m "feat(ingestion): persist dedicated Moteur.ma 350-page batch [skip ci]"
+            for i in 1 2 3 4 5; do
+              echo "Attempt $i: rebasing and pushing to origin main..."
+              if git pull --rebase origin main && git push origin main; then
+                echo "Successfully pushed Moteur batch."
+                echo "committed=true" >> "$GITHUB_OUTPUT"
+                break
+              fi
+              echo "Push rejected or collision detected, aborting rebase and retrying in 5s..."
+              git rebase --abort 2>/dev/null || true
+              sleep 5
+            done
+          else
+            echo "No new raw data detected to commit."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Training Workflow
+        if: steps.commit.outputs.committed == 'true'
+        continue-on-error: true
+        run: |
+          gh workflow run train_model.yml || echo "Training workflow trigger skipped or already queued."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

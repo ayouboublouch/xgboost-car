@@ -518,12 +518,18 @@ class MoteurScraper(BaseScraper):
 
 def main():
     parser = argparse.ArgumentParser(description="Moteur.ma Production Scraper")
+    parser.add_argument("--start-page", type=int, default=1, help="Initial page to scrape (default: 1)")
     parser.add_argument("--max-pages", type=int, default=60, help="Max pages to scrape (default: 60)")
+    parser.add_argument("--output-filename", type=str, default=None, help="Custom output CSV filename (e.g. scraped_moteur_part_1.csv)")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
     args = parser.parse_args()
 
     scraper = MoteurScraper(output_dir=args.output_dir)
-    df = scraper.scrape(max_pages=args.max_pages)
+    df = scraper.scrape(
+        max_pages=args.max_pages,
+        start_page=args.start_page,
+        output_filename=args.output_filename,
+    )
     print(f"Successfully scraped and saved {len(df)} records for Moteur.ma")
 
 
