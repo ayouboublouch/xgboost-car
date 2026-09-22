@@ -15,6 +15,7 @@ Implements:
 
 import argparse
 import datetime
+import json
 import logging
 import os
 import random
@@ -33,6 +34,7 @@ if str(SCRAPERS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRAPERS_DIR))
 
 import pandas as pd
+from typing import Dict, List, Optional, Set, Any, Union
 
 try:
     from scrapers.base import (
@@ -40,6 +42,7 @@ try:
         TRACKING_DIR,
         SEEN_IDS_FILE,
         PROGRESS_FILE,
+        SESSIONS_FILE,
         load_scraping_progress,
         update_scraping_progress,
         record_scraping_session,
@@ -58,6 +61,7 @@ except ImportError:
         TRACKING_DIR,
         SEEN_IDS_FILE,
         PROGRESS_FILE,
+        SESSIONS_FILE,
         load_scraping_progress,
         update_scraping_progress,
         record_scraping_session,
@@ -300,10 +304,77 @@ def update_master_database(raw_dir: Path) -> Path:
             master_parquet.name,
             len(master_df),
         )
+        # Keep persistent seen listing IDs synchronized with master database
+        if "listing_id" in master_df.columns:
+            all_lids = master_df["listing_id"].dropna().astype(str).str.strip().tolist()
+            append_seen_listing_ids(all_lids)
     except Exception as e:
         logger.error("Failed to write master database parquet: %s", e)
 
     return master_parquet
+
+
+def aggregate_parallel_worker_batches(
+    downloads_dir: Union[str, Path] = "data/downloads",
+    raw_dir: Union[str, Path] = "data/raw",
+    tracking_dir: Union[str, Path] = "data/tracking",
+) -> Path:
+    """
+    Consolidate downloaded artifacts from parallel scraper workers:
+    1. Distribute raw CSVs to data/raw/
+    2. Aggregate chunk session JSONs into data/tracking/scraping_sessions.jsonl and progress.json
+    3. Update master database parquet and synchronize seen_listing_ids.txt
+    """
+    import shutil
+    dl_path = Path(downloads_dir)
+    r_path = Path(raw_dir)
+    t_path = Path(tracking_dir)
+    r_path.mkdir(parents=True, exist_ok=True)
+    t_path.mkdir(parents=True, exist_ok=True)
+
+    if dl_path.exists():
+        # Move raw data CSVs
+        for csv_f in dl_path.glob("scraped_*"):
+            dest = r_path / csv_f.name
+            shutil.move(str(csv_f), str(dest))
+            logger.info("Ingested chunk raw CSV: %s", dest.name)
+
+        # Merge session telemetry JSONs
+        session_files = sorted(list(dl_path.glob("session_*.json")))
+        for sf_path in session_files:
+            try:
+                with open(sf_path, "r", encoding="utf-8") as sf:
+                    sess_data = json.load(sf)
+
+                # Append to scraping_sessions.jsonl
+                with open(SESSIONS_FILE, "a", encoding="utf-8") as f_out:
+                    f_out.write(json.dumps(sess_data, ensure_ascii=False) + "\n")
+
+                # Update scraping_progress.json
+                progress = load_scraping_progress()
+                if "recent_sessions" not in progress or not isinstance(progress["recent_sessions"], list):
+                    progress["recent_sessions"] = []
+                progress["recent_sessions"].append(sess_data)
+                progress["recent_sessions"] = progress["recent_sessions"][-20:]
+
+                src = sess_data.get("source")
+                if src:
+                    if src not in progress:
+                        progress[src] = {"last_page": 1, "total_scraped": 0, "last_updated": ""}
+                    end_p = sess_data.get("page_range", {}).get("end", 1)
+                    progress[src]["last_page"] = max(progress[src].get("last_page", 1), end_p)
+                    progress[src]["total_scraped"] = progress[src].get("total_scraped", 0) + sess_data.get("records_added", 0)
+                    progress[src]["last_updated"] = sess_data.get("end_time", "")
+
+                with open(PROGRESS_FILE, "w", encoding="utf-8") as pf:
+                    json.dump(progress, pf, indent=2, ensure_ascii=False)
+
+                logger.info("Merged session telemetry from: %s", sf_path.name)
+            except Exception as e:
+                logger.warning("Could not merge session telemetry from %s: %s", sf_path.name, e)
+
+    # Consolidate master parquet database and synchronize seen_ids
+    return update_master_database(r_path)
 
 
 def run_continuous_harvest(
@@ -350,15 +421,16 @@ def run_continuous_harvest(
     wandaloo_start_page = wandaloo_page
     avito_start_page = avito_page
 
-    # Initialize scraper engines
+    # Initialize scraper engines with clean, independent in-session seen sets
     moteur = MoteurScraper(output_dir=str(output_path))
     wandaloo = WandalooScraper(output_dir=str(output_path))
     avito = AvitoScraper(output_dir=str(output_path))
+    moteur.seen_ids = set()
+    wandaloo.seen_ids = set()
+    avito.seen_ids = set()
 
-    # Sync scrapers seen_ids
-    moteur.seen_ids = seen_ids
-    wandaloo.seen_ids = seen_ids
-    avito.seen_ids = seen_ids
+    avito_blocked = False
+    avito_consecutive_empty = 0
 
     total_harvested = 0
     batch_buffer: List[Dict[str, Any]] = []
@@ -397,12 +469,15 @@ def run_continuous_harvest(
             moteur_batch = moteur.scrape_page(moteur_page)
             moteur_pages += 1
             if not moteur_batch:
-                logger.info("[Moteur] Page %d returned 0 listings (hit end of catalog or empty). Wrapping back to page 1.", moteur_page)
-                moteur_page = 1
+                logger.info("[Moteur] Page %d returned 0 listings. Advancing to page %d...", moteur_page, moteur_page + 1)
+                moteur_page += 1
+                if moteur_page > 500:
+                    logger.info("[Moteur] Reached deep catalog limit (page %d). Wrapping back to page 1.", moteur_page)
+                    moteur_page = 1
                 save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
             else:
                 moteur_extracted += len(moteur_batch)
-                new_moteur = [r for r in moteur_batch if r.get("listing_id") not in seen_ids]
+                new_moteur = [r for r in moteur_batch if str(r.get("listing_id")).strip() not in seen_ids]
                 if new_moteur:
                     for r in new_moteur:
                         lid = str(r.get("listing_id")).strip()
@@ -417,7 +492,7 @@ def run_continuous_harvest(
 
                 # Advance cursor deeper into historical listings
                 moteur_page += 1
-                if moteur_page > 400:
+                if moteur_page > 500:
                     logger.info("[Moteur] Reached deep catalog limit (page %d). Wrapping back to page 1.", moteur_page)
                     moteur_page = 1
                 save_page_cursor(CURSOR_MOTEUR_FILE, moteur_page)
@@ -448,12 +523,15 @@ def run_continuous_harvest(
             wandaloo_batch = wandaloo.scrape_page(wandaloo_page)
             wandaloo_pages += 1
             if not wandaloo_batch:
-                logger.info("[Wandaloo] Page %d returned 0 listings (hit end of catalog or empty). Wrapping back to page 1.", wandaloo_page)
-                wandaloo_page = 1
+                logger.info("[Wandaloo] Page %d returned 0 listings. Advancing to page %d...", wandaloo_page, wandaloo_page + 1)
+                wandaloo_page += 1
+                if wandaloo_page > 150:
+                    logger.info("[Wandaloo] Reached deep catalog limit (page %d). Wrapping back to page 1.", wandaloo_page)
+                    wandaloo_page = 1
                 save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
             else:
                 wandaloo_extracted += len(wandaloo_batch)
-                new_wandaloo = [r for r in wandaloo_batch if r.get("listing_id") not in seen_ids]
+                new_wandaloo = [r for r in wandaloo_batch if str(r.get("listing_id")).strip() not in seen_ids]
                 if new_wandaloo:
                     for r in new_wandaloo:
                         lid = str(r.get("listing_id")).strip()
@@ -468,7 +546,7 @@ def run_continuous_harvest(
 
                 # Advance cursor deeper into historical listings
                 wandaloo_page += 1
-                if wandaloo_page > 200:
+                if wandaloo_page > 150:
                     logger.info("[Wandaloo] Reached deep catalog limit (page %d). Wrapping back to page 1.", wandaloo_page)
                     wandaloo_page = 1
                 save_page_cursor(CURSOR_WANDALOO_FILE, wandaloo_page)
@@ -494,40 +572,49 @@ def run_continuous_harvest(
 
         time.sleep(random.uniform(1.0, 2.5))
 
-        # 3. Harvest from Avito.ma
-        try:
-            avito_batch = avito.scrape_page(avito_page)
-            avito_pages += 1
-            if not avito_batch:
-                logger.info("[Avito] Page %d returned 0 listings (empty or challenge). Wrapping back to page 1.", avito_page)
-                avito_page = 1
-                save_page_cursor(CURSOR_AVITO_FILE, avito_page)
-            else:
-                avito_extracted += len(avito_batch)
-                new_avito = [r for r in avito_batch if r.get("listing_id") not in seen_ids]
-                if new_avito:
-                    for r in new_avito:
-                        lid = str(r.get("listing_id")).strip()
-                        seen_ids.add(lid)
-                        batch_buffer.append(r)
-                    avito_added += len(new_avito)
-                    logger.info("[Avito] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_avito), avito_page, len(batch_buffer))
-                    update_scraping_progress("avito", avito_page, len(new_avito))
+        # 3. Harvest from Avito.ma (with circuit breaker for datacenter IP challenges)
+        if not avito_blocked:
+            try:
+                avito_batch = avito.scrape_page(avito_page)
+                avito_pages += 1
+                if not avito_batch:
+                    avito_consecutive_empty += 1
+                    logger.info("[Avito] Page %d returned 0 listings (challenge/empty, %d/5).", avito_page, avito_consecutive_empty)
+                    if avito_consecutive_empty >= 5:
+                        logger.warning("[Avito] 5 consecutive empty responses (Cloudflare datacenter IP block). Pausing Avito for remainder of session.")
+                        avito_blocked = True
+                    else:
+                        avito_page += 1
+                        if avito_page > 200:
+                            avito_page = 1
+                        save_page_cursor(CURSOR_AVITO_FILE, avito_page)
                 else:
-                    logger.info("[Avito] Page %d had %d listings, all already seen. Advancing...", avito_page, len(avito_batch))
-                    update_scraping_progress("avito", avito_page, 0)
+                    avito_consecutive_empty = 0
+                    avito_extracted += len(avito_batch)
+                    new_avito = [r for r in avito_batch if str(r.get("listing_id")).strip() not in seen_ids]
+                    if new_avito:
+                        for r in new_avito:
+                            lid = str(r.get("listing_id")).strip()
+                            seen_ids.add(lid)
+                            batch_buffer.append(r)
+                        avito_added += len(new_avito)
+                        logger.info("[Avito] Harvested %d fresh listings from page %d (Buffer: %d)", len(new_avito), avito_page, len(batch_buffer))
+                        update_scraping_progress("avito", avito_page, len(new_avito))
+                    else:
+                        logger.info("[Avito] Page %d had %d listings, all already seen. Advancing...", avito_page, len(avito_batch))
+                        update_scraping_progress("avito", avito_page, 0)
 
-                # Advance cursor deeper into catalog
+                    # Advance cursor deeper into catalog
+                    avito_page += 1
+                    if avito_page > 200:
+                        logger.info("[Avito] Reached deep catalog limit (page %d). Wrapping back to page 1.", avito_page)
+                        avito_page = 1
+                    save_page_cursor(CURSOR_AVITO_FILE, avito_page)
+
+            except Exception as e:
+                logger.warning("[Avito] Error scraping page %d: %s", avito_page, e)
                 avito_page += 1
-                if avito_page > 300:
-                    logger.info("[Avito] Reached deep catalog limit (page %d). Wrapping back to page 1.", avito_page)
-                    avito_page = 1
                 save_page_cursor(CURSOR_AVITO_FILE, avito_page)
-
-        except Exception as e:
-            logger.warning("[Avito] Error scraping page %d: %s", avito_page, e)
-            avito_page += 1
-            save_page_cursor(CURSOR_AVITO_FILE, avito_page)
 
         # Checkpoint if batch buffer reached target size
         if len(batch_buffer) >= batch_size:

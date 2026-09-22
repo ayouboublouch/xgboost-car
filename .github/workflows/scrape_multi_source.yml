@@ -3,7 +3,7 @@ name: Parallel Multi-Source Car Scraper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 8,20 * * *'
+    - cron: '0 */6 * * *'
 
 concurrency:
   group: scrape-multi-source
@@ -84,12 +84,14 @@ jobs:
             --max-pages ${{ matrix.max_pages }} \
             --output-filename "scraped_${{ matrix.source }}_part_${{ matrix.start_page }}.csv"
 
-      - name: Upload Scraped Artifact
+      - name: Upload Scraped Artifact & Telemetry
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-data-${{ matrix.source }}-part-${{ matrix.start_page }}
-          path: data/raw/scraped_${{ matrix.source }}_part_${{ matrix.start_page }}.*
+          name: worker-data-${{ matrix.source }}-part-${{ matrix.start_page }}
+          path: |
+            data/raw/scraped_${{ matrix.source }}_part_${{ matrix.start_page }}.*
+            data/tracking/session_${{ matrix.source }}_part_${{ matrix.start_page }}.json
           if-no-files-found: ignore
 
   aggregate-and-commit:
@@ -126,15 +128,15 @@ jobs:
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          pattern: raw-data-*
-          path: data/raw
+          pattern: worker-data-*
+          path: data/downloads
           merge-multiple: true
 
-      - name: Consolidate scraped chunks and update master database
+      - name: Consolidate scraped chunks, telemetry, and master database
         run: |
-          mkdir -p data/raw data/tracking
-          ls -la data/raw/
-          python -c "from scrapers.continuous_harvester import update_master_database; from pathlib import Path; p = update_master_database(Path('data/raw')); print('Consolidated into:', p)"
+          mkdir -p data/raw data/tracking data/downloads
+          ls -la data/downloads/ || true
+          python -c "from scrapers.continuous_harvester import aggregate_parallel_worker_batches; p = aggregate_parallel_worker_batches(); print('Consolidated into:', p)"
 
       - name: Commit and push newly collected data
         id: commit

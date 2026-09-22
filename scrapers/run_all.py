@@ -29,12 +29,30 @@ SCRAPERS_DIR = Path(__file__).resolve().parent
 if str(SCRAPERS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRAPERS_DIR))
 
+import datetime
+import json
 import pandas as pd
 
 try:
-    from scrapers.base import BaseScraper, SCHEMA_FIELDS, consolidate_daily_scrapes, purge_empty_raw_files
+    from scrapers.base import (
+        BaseScraper,
+        SCHEMA_FIELDS,
+        consolidate_daily_scrapes,
+        purge_empty_raw_files,
+        record_scraping_session,
+        update_scraping_progress,
+        TRACKING_DIR,
+    )
 except ImportError:
-    from base import BaseScraper, SCHEMA_FIELDS, consolidate_daily_scrapes, purge_empty_raw_files
+    from base import (
+        BaseScraper,
+        SCHEMA_FIELDS,
+        consolidate_daily_scrapes,
+        purge_empty_raw_files,
+        record_scraping_session,
+        update_scraping_progress,
+        TRACKING_DIR,
+    )
 
 def get_scraper_class(source: str) -> Type[BaseScraper]:
     """Lazy loader for scrapers to ensure smooth CLI operation and resilience."""
@@ -165,7 +183,7 @@ def run():
             continue
 
         logger.info("\n>>> Starting provider: %s (page %d to %d) ...", src, args.start_page, args.start_page + args.max_pages - 1)
-        records_count = 0
+        start_time = datetime.datetime.now()
         scraper = cls(output_dir=args.output_dir)
         try:
             df = scraper.scrape(
@@ -178,10 +196,39 @@ def run():
         except Exception as e:
             logger.warning(">>> Provider %s encountered exception: %s", src, e)
             df = None
+        end_time = datetime.datetime.now()
 
         if df is None or len(df) == 0:
             logger.warning(">>> Provider %s yielded 0 records. Writing nothing.", src)
             records_count = 0
+
+        # Record structured session telemetry for parallel scraper worker
+        try:
+            sess_meta = record_scraping_session(
+                scraper_name="parallel_worker",
+                source=src,
+                start_time=start_time,
+                end_time=end_time,
+                pages_scraped=args.max_pages,
+                records_extracted=records_count,
+                records_added=records_count,
+                duplicates_skipped=0,
+                start_page=args.start_page,
+                end_page=args.start_page + args.max_pages - 1,
+                status="success" if records_count > 0 else "empty",
+                notes=f"Parallel chunk part {args.start_page}",
+            )
+            if records_count > 0:
+                update_scraping_progress(src, args.start_page + args.max_pages - 1, records_count)
+
+            # Save standalone chunk session JSON for CI artifact upload & aggregation
+            TRACKING_DIR.mkdir(parents=True, exist_ok=True)
+            chunk_session_file = TRACKING_DIR / f"session_{src}_part_{args.start_page}.json"
+            with open(chunk_session_file, "w", encoding="utf-8") as f:
+                json.dump(sess_meta, f, indent=2, ensure_ascii=False)
+            logger.info("Saved chunk session telemetry to %s", chunk_session_file)
+        except Exception as e:
+            logger.warning("Could not record session telemetry: %s", e)
 
         summary[src] = records_count
         logger.info(">>> Provider %s finished with %d verified records.", src, records_count)

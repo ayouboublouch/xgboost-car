@@ -621,7 +621,7 @@ class BaseScraper(abc.ABC):
         self.delay_min = delay_min
         self.delay_max = delay_max
         self.max_retries = max_retries
-        self.seen_ids: Set[str] = load_seen_listing_ids()
+        self.seen_ids: Set[str] = set()
         self.session = self._init_session()
 
     def _init_session(self):
