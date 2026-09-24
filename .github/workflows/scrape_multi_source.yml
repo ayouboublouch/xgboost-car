@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 5
       matrix:
         include:
           - source: moteur
@@ -36,17 +36,13 @@ jobs:
             max_pages: 60
             page_label: "pages 241-300"
           - source: wandaloo
-            start_page: 41
-            max_pages: 40
-            page_label: "pages 41-80"
+            start_page: 1
+            max_pages: 22
+            page_label: "pages 1-22"
           - source: wandaloo
-            start_page: 81
-            max_pages: 40
-            page_label: "pages 81-120"
-          - source: avito
-            start_page: 25
-            max_pages: 40
-            page_label: "pages 25-64"
+            start_page: 23
+            max_pages: 23
+            page_label: "pages 23-45"
 
     steps:
       - name: Checkout repository

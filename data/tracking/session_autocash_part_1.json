@@ -1,0 +1,19 @@
+{
+  "session_id": "sess_20260924_213106_autocash",
+  "scraper_name": "parallel_worker",
+  "source": "autocash",
+  "start_time": "2026-09-24 21:31:02",
+  "end_time": "2026-09-24 21:31:05",
+  "duration_seconds": 3.14,
+  "pages_scraped": 1,
+  "page_range": {
+    "start": 1,
+    "end": 1
+  },
+  "records_extracted": 20,
+  "records_added": 20,
+  "duplicates_skipped": 0,
+  "cumulative_seen_ids": 19522,
+  "status": "success",
+  "notes": "Parallel chunk part 1"
+}
