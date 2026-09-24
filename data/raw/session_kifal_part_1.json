@@ -1,0 +1,19 @@
+{
+  "session_id": "sess_20260924_223301_kifal",
+  "scraper_name": "parallel_worker",
+  "source": "kifal",
+  "start_time": "2026-09-24 22:32:05",
+  "end_time": "2026-09-24 22:33:01",
+  "duration_seconds": 55.51,
+  "pages_scraped": 50,
+  "page_range": {
+    "start": 1,
+    "end": 50
+  },
+  "records_extracted": 378,
+  "records_added": 378,
+  "duplicates_skipped": 0,
+  "cumulative_seen_ids": 21337,
+  "status": "success",
+  "notes": "Parallel chunk part 1"
+}
