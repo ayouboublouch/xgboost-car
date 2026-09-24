@@ -1,10 +1,10 @@
 {
-  "session_id": "sess_20260924_160953_avito",
+  "session_id": "sess_20260924_205902_avito",
   "scraper_name": "parallel_worker",
   "source": "avito",
-  "start_time": "2026-09-24 16:05:40",
-  "end_time": "2026-09-24 16:09:53",
-  "duration_seconds": 253.14,
+  "start_time": "2026-09-24 20:54:49",
+  "end_time": "2026-09-24 20:59:02",
+  "duration_seconds": 252.51,
   "pages_scraped": 40,
   "page_range": {
     "start": 25,
@@ -13,7 +13,7 @@
   "records_extracted": 0,
   "records_added": 0,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 18757,
+  "cumulative_seen_ids": 20165,
   "status": "empty",
   "notes": "Parallel chunk part 25"
 }
