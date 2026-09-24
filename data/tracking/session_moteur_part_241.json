@@ -1,19 +1,19 @@
 {
-  "session_id": "sess_20260924_205726_moteur",
+  "session_id": "sess_20260924_234307_moteur",
   "scraper_name": "parallel_worker",
   "source": "moteur",
-  "start_time": "2026-09-24 20:54:43",
-  "end_time": "2026-09-24 20:57:26",
-  "duration_seconds": 162.5,
+  "start_time": "2026-09-24 23:39:46",
+  "end_time": "2026-09-24 23:43:07",
+  "duration_seconds": 200.45,
   "pages_scraped": 60,
   "page_range": {
     "start": 241,
     "end": 300
   },
-  "records_extracted": 1760,
-  "records_added": 1760,
+  "records_extracted": 1800,
+  "records_added": 1800,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 20165,
+  "cumulative_seen_ids": 21340,
   "status": "success",
   "notes": "Parallel chunk part 241"
 }
