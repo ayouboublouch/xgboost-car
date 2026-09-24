@@ -227,31 +227,37 @@ def flush_checkpoint(
 
 def update_master_database(raw_dir: Path) -> Path:
     """
-    Merge all raw scraped files (scraped_combined_*.csv, scraped_continuous_*.csv, avito_local_*.csv)
-    into data/raw/scraped_master_database.parquet with listing_id deduplication.
-    Excludes scraped_master_database.parquet itself to avoid recursive empty self-reads.
+    Merge all raw scraped files (*.csv, *.parquet) into data/raw/scraped_master_database.parquet
+    with listing_id deduplication.
+    Dynamically scans all data files in raw_dir, strictly excluding scraped_master_database.parquet itself.
     """
     raw_dir = Path(raw_dir)
     master_parquet = raw_dir / "scraped_master_database.parquet"
     dfs = []
 
-    # Match all scraped_combined_*.csv, scraped_continuous_*.csv, scraped_*_part_*.csv, and avito/moteur/wandaloo files
-    candidate_files = sorted(list(set(
-        list(raw_dir.glob("scraped_combined_*.csv"))
-        + list(raw_dir.glob("scraped_continuous_*.csv"))
-        + list(raw_dir.glob("scraped_*_part_*.csv"))
-        + list(raw_dir.glob("avito_local_*.csv"))
-        + list(raw_dir.glob("moteur_*.csv"))
-        + list(raw_dir.glob("wandaloo_*.csv"))
-        + list(raw_dir.glob("avito_*.csv"))
-    )))
+    # Dynamically match all .csv and .parquet files, strictly excluding the master parquet file itself
+    candidate_files = sorted([
+        f for f in raw_dir.iterdir()
+        if f.is_file()
+        and f.suffix.lower() in (".csv", ".parquet")
+        and f.name != "scraped_master_database.parquet"
+        and not f.name.startswith("temp_")
+        and not f.name.endswith(".tmp")
+    ])
 
     for f in candidate_files:
         try:
             if f.stat().st_size <= 500:
                 logger.info("Skipping small/empty raw file: %s", f.name)
                 continue
-            df_c = pd.read_csv(f, low_memory=False, on_bad_lines="skip", dtype={"listing_id": str})
+            if f.suffix.lower() == ".parquet":
+                df_c = pd.read_parquet(f)
+            else:
+                df_c = pd.read_csv(f, low_memory=False, on_bad_lines="skip", dtype={"listing_id": str})
+
+            if "listing_id" in df_c.columns:
+                df_c["listing_id"] = df_c["listing_id"].astype(str)
+
             if not df_c.empty and len(df_c) > 0:
                 dfs.append(df_c)
                 logger.info("Loaded %d records from %s", len(df_c), f.name)
