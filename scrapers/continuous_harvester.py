@@ -270,12 +270,54 @@ def update_master_database(raw_dir: Path) -> Path:
 
     master_df = pd.concat(dfs, ignore_index=True)
 
-    # Deduplicate strictly on listing_id, keeping the latest record
+    # Deduplicate strictly on listing_id, prioritizing records with non-null phone numbers
     if "listing_id" in master_df.columns:
         master_df["listing_id"] = master_df["listing_id"].astype(str).str.strip()
+        if "seller_phone" in master_df.columns:
+            has_phone = (
+                master_df["seller_phone"].notna()
+                & (master_df["seller_phone"].astype(str).str.strip() != "")
+                & (master_df["seller_phone"].astype(str).str.strip() != "nan")
+            )
+            master_df["_has_phone"] = has_phone
+            master_df = master_df.sort_values("_has_phone", ascending=True)
+            master_df = master_df.drop(columns=["_has_phone"])
         master_df = master_df.drop_duplicates(subset=["listing_id"], keep="last")
     else:
         master_df = master_df.drop_duplicates()
+
+    # Format and normalize seller_phone to strict 10 digits
+    if "seller_phone" in master_df.columns:
+        def _clean_phone(p):
+            if pd.isna(p) or p is None:
+                return None
+            s = str(p).replace(".0", "").strip()
+            if not s or s.lower() in ("nan", "none", "<na>"):
+                return None
+            s = s.zfill(10)
+            return s if len(s) == 10 and s.startswith("0") and s[1] in "567" else None
+
+        master_df["seller_phone"] = master_df["seller_phone"].apply(_clean_phone)
+
+    # Default platform broker contact lines if missing
+    if "source" in master_df.columns and "seller_phone" in master_df.columns:
+        kifal_mask = (master_df["source"] == "kifal") & (
+            master_df["seller_phone"].isna()
+            | (master_df["seller_phone"].astype(str).str.strip() == "")
+        )
+        master_df.loc[kifal_mask, "seller_phone"] = "0701070727"
+
+        autocash_mask = (master_df["source"] == "autocash") & (
+            master_df["seller_phone"].isna()
+            | (master_df["seller_phone"].astype(str).str.strip() == "")
+        )
+        master_df.loc[autocash_mask, "seller_phone"] = "0663000017"
+
+    # Always strictly synchronize seller_phone_hash from seller_phone
+    if "seller_phone" in master_df.columns:
+        master_df["seller_phone_hash"] = master_df["seller_phone"].apply(
+            lambda p: hash_phone(p) if p and str(p).strip() and str(p).lower() not in ("nan", "none") else None
+        )
 
     # Assert non-empty before saving
     assert len(master_df) > 0, "Master database DataFrame is empty after deduplication"

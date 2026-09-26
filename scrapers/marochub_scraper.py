@@ -98,43 +98,57 @@ class MarocHubScraper(BaseScraper):
         """Fetch vehicle detail page to extract seller WhatsApp / phone."""
         if not detail_url:
             return None
+        if not hasattr(self, "phone_cache"):
+            self.phone_cache = {}
+        if detail_url in self.phone_cache:
+            return self.phone_cache[detail_url]
+
+        phone = None
         try:
             resp = self.session.get(detail_url, headers=DEFAULT_BROWSER_HEADERS, verify=False, timeout=6)
-            if resp.status_code != 200:
-                return None
-            html = resp.text
+            if resp.status_code == 200:
+                html = resp.text
 
-            # 1. Check tel: links
-            tel_matches = re.findall(r'href=["\']tel:([^"\']+)["\']', html, re.I)
-            for t in tel_matches:
-                p = extract_moroccan_phone(t)
-                if p:
-                    return p
+                # 1. Check tel: links
+                tel_matches = re.findall(r'href=["\']tel:([^"\']+)["\']', html, re.I)
+                for t in tel_matches:
+                    phone = extract_moroccan_phone(t)
+                    if phone:
+                        break
 
-            # 2. Check WhatsApp links
-            wa_matches = re.findall(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\+?\d+)', html, re.I)
-            for w in wa_matches:
-                p = extract_moroccan_phone(w)
-                if p:
-                    return p
+                # 2. Check WhatsApp links
+                if not phone:
+                    wa_matches = re.findall(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\+?\d+)', html, re.I)
+                    for w in wa_matches:
+                        phone = extract_moroccan_phone(w)
+                        if phone:
+                            break
 
-            # 3. Regex search in body
-            return extract_moroccan_phone(html)
+                # 3. Regex search in body
+                if not phone:
+                    phone = extract_moroccan_phone(html)
         except Exception as e:
             logger.debug("[%s] Detail phone error for %s: %s", self.source_name, detail_url, e)
-            return None
 
-    def parse_vehicle_json(self, v: Dict[str, Any], date_scraped: str) -> Optional[Dict[str, Any]]:
+        self.phone_cache[detail_url] = phone
+        return phone
+
+    def parse_vehicle_json(self, v: Dict[str, Any], date_scraped: str, id_to_href: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
         """Normalize vehicle dictionary from MarocHub Next.js JSON payload."""
         l_id = str(v.get("id") or "")
         if not l_id or l_id in self.seen_ids:
             return None
 
         # Build vehicle detail URL
-        title = str(v.get("title") or "")
-        slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
-        short_id = l_id[:8]
-        detail_url = f"https://marochub.app/vehicle/{slug}-{short_id}" if slug else f"https://marochub.app/vehicle/{short_id}"
+        slug = v.get("slug")
+        if slug:
+            detail_url = f"https://marochub.app/vehicle/{slug}"
+        elif id_to_href and l_id[:8] in id_to_href:
+            detail_url = urljoin("https://marochub.app", id_to_href[l_id[:8]])
+        else:
+            title = str(v.get("title") or "")
+            title_slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
+            detail_url = f"https://marochub.app/vehicle/{title_slug}-{l_id[:8]}" if title_slug else f"https://marochub.app/vehicle/{l_id[:8]}"
 
         brand = str(v.get("brand") or "").strip()
         model = str(v.get("model") or "").strip()
@@ -237,10 +251,7 @@ class MarocHubScraper(BaseScraper):
                 price_mad = float(raw_p)
 
         # Phone lookup
-        # Optional phone lookup (limited to avoid slow crawl)
-        seller_phone = None
-        if len(self.seen_ids) < 5:
-            seller_phone = self.extract_phone_from_detail(full_url)
+        seller_phone = self.extract_phone_from_detail(full_url)
         seller_phone_hash = hash_phone(seller_phone)
 
         city = "Casablanca"
@@ -296,13 +307,22 @@ class MarocHubScraper(BaseScraper):
         records = []
         parsed_ids = set()
 
+        # Pre-scan HTML cards to map short_id (last 8 hex chars) -> full detail href
+        soup = BeautifulSoup(html, "html.parser")
+        id_to_href = {}
+        for a in soup.find_all("a", href=re.compile(r"/vehicle/")):
+            href = a.get("href", "")
+            m_hex = re.search(r"([a-f0-9]{8})$", href)
+            if m_hex:
+                id_to_href[m_hex.group(1)] = href
+
         # 1. Parse JSON objects from script payloads
         for s in re.finditer(r'initialFeatured\\?":(\[.*?\])\s*,\s*\\?"initial', html):
             raw_json = s.group(1).replace(r'\"', '"').replace(r'\\/', '/')
             try:
                 vehicles = json.loads(raw_json)
                 for v in vehicles:
-                    rec = self.parse_vehicle_json(v, date_scraped)
+                    rec = self.parse_vehicle_json(v, date_scraped, id_to_href=id_to_href)
                     if rec and rec["listing_id"] not in parsed_ids:
                         records.append(rec)
                         parsed_ids.add(rec["listing_id"])
