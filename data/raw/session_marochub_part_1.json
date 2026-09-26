@@ -1,19 +1,19 @@
 {
-  "session_id": "sess_20260925_142649_marochub",
+  "session_id": "sess_20260926_133800_marochub",
   "scraper_name": "parallel_worker",
   "source": "marochub",
-  "start_time": "2026-09-25 14:26:17",
-  "end_time": "2026-09-25 14:26:49",
-  "duration_seconds": 31.27,
+  "start_time": "2026-09-26 13:37:33",
+  "end_time": "2026-09-26 13:38:00",
+  "duration_seconds": 27.3,
   "pages_scraped": 50,
   "page_range": {
     "start": 1,
     "end": 50
   },
-  "records_extracted": 178,
-  "records_added": 178,
+  "records_extracted": 177,
+  "records_added": 177,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 21740,
+  "cumulative_seen_ids": 22776,
   "status": "success",
   "notes": "Parallel chunk part 1"
 }
