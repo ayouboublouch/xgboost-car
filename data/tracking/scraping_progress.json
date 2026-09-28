@@ -1,13 +1,13 @@
 {
   "moteur": {
     "last_page": 500,
-    "total_scraped": 16362,
-    "last_updated": "2026-09-28T00:47:28"
+    "total_scraped": 16372,
+    "last_updated": "2026-09-28T05:02:54"
   },
   "wandaloo": {
     "last_page": 42,
     "total_scraped": 370,
-    "last_updated": "2026-09-27T23:14:05"
+    "last_updated": "2026-09-28T03:31:39"
   },
   "avito": {
     "last_page": 12,
@@ -15,63 +15,6 @@
     "last_updated": "2026-09-22T14:44:05"
   },
   "recent_sessions": [
-    {
-      "session_id": "sess_20260926_015123_wandaloo",
-      "scraper_name": "continuous_harvester",
-      "source": "wandaloo",
-      "start_time": "2026-09-25 22:59:22",
-      "end_time": "2026-09-26 01:51:23",
-      "duration_seconds": 10320.51,
-      "pages_scraped": 1520,
-      "page_range": {
-        "start": 42,
-        "end": 62
-      },
-      "records_extracted": 343,
-      "records_added": 0,
-      "duplicates_skipped": 343,
-      "cumulative_seen_ids": 22712,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20260926_015123_avito",
-      "scraper_name": "continuous_harvester",
-      "source": "avito",
-      "start_time": "2026-09-25 22:59:22",
-      "end_time": "2026-09-26 01:51:23",
-      "duration_seconds": 10320.51,
-      "pages_scraped": 5,
-      "page_range": {
-        "start": 34,
-        "end": 38
-      },
-      "records_extracted": 0,
-      "records_added": 0,
-      "duplicates_skipped": 0,
-      "cumulative_seen_ids": 22712,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20260926_053838_moteur",
-      "scraper_name": "continuous_harvester",
-      "source": "moteur",
-      "start_time": "2026-09-26 02:46:37",
-      "end_time": "2026-09-26 05:38:38",
-      "duration_seconds": 10321.29,
-      "pages_scraped": 1538,
-      "page_range": {
-        "start": 468,
-        "end": 6
-      },
-      "records_extracted": 15006,
-      "records_added": 28,
-      "duplicates_skipped": 14978,
-      "cumulative_seen_ids": 22740,
-      "status": "success",
-      "notes": ""
-    },
     {
       "session_id": "sess_20260926_053839_wandaloo",
       "scraper_name": "continuous_harvester",
@@ -392,6 +335,63 @@
       "records_added": 0,
       "duplicates_skipped": 0,
       "cumulative_seen_ids": 25121,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20260928_054048_moteur",
+      "scraper_name": "continuous_harvester",
+      "source": "moteur",
+      "start_time": "2026-09-28 02:48:46",
+      "end_time": "2026-09-28 05:40:48",
+      "duration_seconds": 10322.36,
+      "pages_scraped": 1403,
+      "page_range": {
+        "start": 450,
+        "end": 353
+      },
+      "records_extracted": 14997,
+      "records_added": 10,
+      "duplicates_skipped": 14987,
+      "cumulative_seen_ids": 25131,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20260928_054048_wandaloo",
+      "scraper_name": "continuous_harvester",
+      "source": "wandaloo",
+      "start_time": "2026-09-28 02:48:46",
+      "end_time": "2026-09-28 05:40:48",
+      "duration_seconds": 10322.36,
+      "pages_scraped": 1403,
+      "page_range": {
+        "start": 43,
+        "end": 96
+      },
+      "records_extracted": 350,
+      "records_added": 0,
+      "duplicates_skipped": 350,
+      "cumulative_seen_ids": 25131,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20260928_054049_avito",
+      "scraper_name": "continuous_harvester",
+      "source": "avito",
+      "start_time": "2026-09-28 02:48:46",
+      "end_time": "2026-09-28 05:40:48",
+      "duration_seconds": 10322.36,
+      "pages_scraped": 5,
+      "page_range": {
+        "start": 62,
+        "end": 66
+      },
+      "records_extracted": 0,
+      "records_added": 0,
+      "duplicates_skipped": 0,
+      "cumulative_seen_ids": 25131,
       "status": "success",
       "notes": ""
     }
