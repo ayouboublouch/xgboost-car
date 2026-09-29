@@ -617,21 +617,11 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         logger.info("Dropped %d duplicate seller re-posts (same seller + vehicle specs)", n_reposts_dropped)
 
     # Tier C: Exact duplicate vehicle specifications across listings
-    spec_mask = (
-        df["brand"].notna()
-        & df["year"].notna()
-        & df["price_mad"].notna()
-        & (df["price_mad"] > 0)
-        & df["mileage_km"].notna()
-        & df["city"].notna()
-    )
-    if spec_mask.any():
+    spec_cols = ["brand", "year", "mileage_km", "price_mad", "city", "fuel_type"]
+    available_spec_cols = [c for c in spec_cols if c in df.columns]
+    if available_spec_cols:
         n_before_spec = len(df)
-        spec_part = df[spec_mask].drop_duplicates(
-            subset=["brand", "year", "mileage_km", "price_mad", "city", "fuel_type"],
-            keep="last",
-        )
-        df = pd.concat([spec_part, df[~spec_mask]], ignore_index=True)
+        df = df.drop_duplicates(subset=available_spec_cols, keep="last")
         n_specs_dropped = n_before_spec - len(df)
         logger.info("Dropped %d duplicate vehicle listings with identical physical specs", n_specs_dropped)
 
