@@ -354,6 +354,28 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
     except Exception as e:
         logger.warning("consolidate_daily_scrapes notice: %s", e)
 
+    # Check for pre-consolidated master database parquet first
+    master_parquet = raw_dir / "scraped_master_database.parquet"
+    if master_parquet.exists() and master_parquet.stat().st_size > 1000:
+        logger.info("Found consolidated master database: %s (%.2f MB). Loading directly ...", master_parquet.name, master_parquet.stat().st_size / 1e6)
+        try:
+            df_m = pd.read_parquet(master_parquet)
+            df_m = standardize_raw_dataframe(df_m)
+            validate_raw_schema(df_m, source_name=master_parquet.name)
+            if "brand" in df_m.columns and "price_mad" in df_m.columns:
+                valid_mask = (
+                    df_m["brand"].notna()
+                    & (df_m["brand"].astype(str).str.strip() != "")
+                    & (df_m["brand"].astype(str).str.lower() != "nan")
+                    & df_m["price_mad"].notna()
+                    & (pd.to_numeric(df_m["price_mad"], errors="coerce") > 0)
+                )
+                df_valid = df_m[valid_mask].copy()
+                logger.info("Loaded %d valid rows directly from master database %s", len(df_valid), master_parquet.name)
+                return df_valid
+        except Exception as e:
+            logger.warning("Could not read master database directly (%s), falling back to raw files scan", e)
+
     frames = []
     loaded_stems = set()
 
@@ -556,6 +578,65 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["price_mad", "year", "mileage_km", "doors_count", "photos_count"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Multi-tier content & re-post deduplication:
+    # Tier A: URL Deduplication
+    if "url" in df.columns:
+        valid_url = (
+            df["url"].notna()
+            & (df["url"].astype(str).str.strip() != "")
+            & (df["url"].astype(str).str.lower() != "nan")
+        )
+        if valid_url.any():
+            dedup_url = df[valid_url].drop_duplicates(subset=["url"], keep="last")
+            df = pd.concat([dedup_url, df[~valid_url]], ignore_index=True)
+
+    # Tier B: Seller re-posts (same seller phone hash + brand + year + km_bucket + price_mad)
+    df["_km_bucket"] = df["mileage_km"].fillna(-1).apply(
+        lambda km: round(float(km) / 2500) * 2500 if pd.notna(km) and float(km) >= 0 else -1
+    )
+    has_phone = (
+        df["seller_phone_hash"].notna()
+        & (df["seller_phone_hash"].astype(str).str.strip() != "")
+        & (df["seller_phone_hash"].astype(str).str.lower() != "nan")
+    )
+    repost_mask = (
+        has_phone
+        & df["brand"].notna()
+        & df["year"].notna()
+        & df["price_mad"].notna()
+    )
+    if repost_mask.any():
+        n_before_repost = len(df)
+        repost_part = df[repost_mask].drop_duplicates(
+            subset=["seller_phone_hash", "brand", "year", "_km_bucket", "price_mad"],
+            keep="last",
+        )
+        df = pd.concat([repost_part, df[~repost_mask]], ignore_index=True)
+        n_reposts_dropped = n_before_repost - len(df)
+        logger.info("Dropped %d duplicate seller re-posts (same seller + vehicle specs)", n_reposts_dropped)
+
+    # Tier C: Exact duplicate vehicle specifications across listings
+    spec_mask = (
+        df["brand"].notna()
+        & df["year"].notna()
+        & df["price_mad"].notna()
+        & (df["price_mad"] > 0)
+        & df["mileage_km"].notna()
+        & df["city"].notna()
+    )
+    if spec_mask.any():
+        n_before_spec = len(df)
+        spec_part = df[spec_mask].drop_duplicates(
+            subset=["brand", "year", "mileage_km", "price_mad", "city", "fuel_type"],
+            keep="last",
+        )
+        df = pd.concat([spec_part, df[~spec_mask]], ignore_index=True)
+        n_specs_dropped = n_before_spec - len(df)
+        logger.info("Dropped %d duplicate vehicle listings with identical physical specs", n_specs_dropped)
+
+    df = df.drop(columns=["_km_bucket"], errors="ignore")
+    logger.info("Rows after full multi-tier deduplication: %d", len(df))
 
     # Clean fiscal_power_cv into integer & ceiling flag
     if "fiscal_power_cv" in df.columns:
