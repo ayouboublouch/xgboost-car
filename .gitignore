@@ -24,3 +24,6 @@ ehthumbs.db
 
 # CatBoost training logs
 catboost_info/
+
+# Scratch & temporary downloads
+scratch/
