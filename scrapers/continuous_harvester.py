@@ -281,8 +281,8 @@ def update_master_database(raw_dir: Path) -> Path:
             )
             master_df["_has_phone"] = has_phone
             master_df = master_df.sort_values("_has_phone", ascending=True)
-            master_df = master_df.drop(columns=["_has_phone"])
-        master_df = master_df.drop_duplicates(subset=["listing_id"], keep="last")
+        dedup_subset = ["source", "listing_id"] if "source" in master_df.columns else ["listing_id"]
+        master_df = master_df.drop_duplicates(subset=dedup_subset, keep="last")
     else:
         master_df = master_df.drop_duplicates()
 

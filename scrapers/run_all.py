@@ -98,6 +98,13 @@ def get_scraper_class(source: str) -> Type[BaseScraper]:
         except ImportError:
             from marochub_scraper import MarocHubScraper
             return MarocHubScraper
+    elif source == "marocannonces":
+        try:
+            from scrapers.marocannonces_scraper import MarocAnnoncesScraper
+            return MarocAnnoncesScraper
+        except ImportError:
+            from marocannonces_scraper import MarocAnnoncesScraper
+            return MarocAnnoncesScraper
     elif source == "siaracash":
         try:
             from scrapers.siaracash_scraper import SiaraCashScraper
@@ -108,7 +115,7 @@ def get_scraper_class(source: str) -> Type[BaseScraper]:
     else:
         raise ValueError(f"Unknown scraper source: '{source}'")
 
-AVAILABLE_SOURCES = ["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "siaracash"]
+AVAILABLE_SOURCES = ["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "marocannonces", "siaracash"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -124,7 +131,7 @@ def run():
         "--source",
         type=str,
         default="moteur",
-        choices=["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "siaracash", "all", "none"],
+        choices=["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "marocannonces", "siaracash", "all", "none"],
         help="Target platform to scrape (default: moteur, use none to skip scraping)",
     )
     parser.add_argument(

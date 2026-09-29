@@ -16,44 +16,6 @@
   },
   "recent_sessions": [
     {
-      "session_id": "sess_20260926_181920_wandaloo",
-      "scraper_name": "continuous_harvester",
-      "source": "wandaloo",
-      "start_time": "2026-09-26 15:27:18",
-      "end_time": "2026-09-26 18:19:20",
-      "duration_seconds": 10322.44,
-      "pages_scraped": 1528,
-      "page_range": {
-        "start": 100,
-        "end": 128
-      },
-      "records_extracted": 344,
-      "records_added": 0,
-      "duplicates_skipped": 344,
-      "cumulative_seen_ids": 23362,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20260926_181921_avito",
-      "scraper_name": "continuous_harvester",
-      "source": "avito",
-      "start_time": "2026-09-26 15:27:18",
-      "end_time": "2026-09-26 18:19:20",
-      "duration_seconds": 10322.44,
-      "pages_scraped": 5,
-      "page_range": {
-        "start": 42,
-        "end": 46
-      },
-      "records_extracted": 0,
-      "records_added": 0,
-      "duplicates_skipped": 0,
-      "cumulative_seen_ids": 23362,
-      "status": "success",
-      "notes": ""
-    },
-    {
       "session_id": "sess_20260927_010907_moteur",
       "scraper_name": "continuous_harvester",
       "source": "moteur",
@@ -394,6 +356,49 @@
       "cumulative_seen_ids": 26222,
       "status": "success",
       "notes": ""
+    },
+    {
+      "session_id": "sess_20260929_160740_marocannonces",
+      "scraper_name": "parallel_worker",
+      "source": "marocannonces",
+      "start_time": "2026-09-29 16:07:22",
+      "end_time": "2026-09-29 16:07:40",
+      "duration_seconds": 17.91,
+      "pages_scraped": 1,
+      "page_range": {
+        "start": 1,
+        "end": 1
+      },
+      "records_extracted": 20,
+      "records_added": 20,
+      "duplicates_skipped": 0,
+      "cumulative_seen_ids": 51554,
+      "status": "success",
+      "notes": "Parallel chunk part 1"
+    },
+    {
+      "session_id": "sess_20260929_160911_marocannonces",
+      "scraper_name": "parallel_worker",
+      "source": "marocannonces",
+      "start_time": "2026-09-29 16:08:53",
+      "end_time": "2026-09-29 16:09:11",
+      "duration_seconds": 17.79,
+      "pages_scraped": 1,
+      "page_range": {
+        "start": 1,
+        "end": 1
+      },
+      "records_extracted": 20,
+      "records_added": 20,
+      "duplicates_skipped": 0,
+      "cumulative_seen_ids": 51554,
+      "status": "success",
+      "notes": "Parallel chunk part 1"
     }
-  ]
+  ],
+  "marocannonces": {
+    "last_page": 1,
+    "total_scraped": 40,
+    "last_updated": "2026-09-29T16:09:11"
+  }
 }

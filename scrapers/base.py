@@ -93,7 +93,18 @@ def extract_moroccan_phone(text: Any) -> Optional[str]:
     if len(s) == 9 and s[0] in "567" and s.isdigit():
         s = "0" + s
 
-    pattern = r"(?:(?:\+|00)212|0)\s*[5-7](?:[\s\.-]*\d{2}){4}"
+    # 1. Fast check if s when stripped of non-digits is a direct Moroccan phone
+    digits_only = re.sub(r"\D", "", s)
+    if len(digits_only) == 10 and digits_only.startswith("0") and digits_only[1] in "567":
+        if digits_only not in BLACKLIST_PHONES:
+            return digits_only
+    if len(digits_only) == 12 and (digits_only.startswith("2125") or digits_only.startswith("2126") or digits_only.startswith("2127")):
+        cand = "0" + digits_only[3:]
+        if cand not in BLACKLIST_PHONES:
+            return cand
+
+    # 2. Match within unstructured text with arbitrary separators
+    pattern = r"(?:(?:\+|00)212|0)\s*[5-7](?:[\s\.-]*\d){8}"
     match = re.search(pattern, s)
     if not match:
         return None
