@@ -1,10 +1,10 @@
 {
-  "session_id": "sess_20260930_213844_wandaloo",
+  "session_id": "sess_20260930_215329_wandaloo",
   "scraper_name": "parallel_worker",
   "source": "wandaloo",
-  "start_time": "2026-09-30 21:38:35",
-  "end_time": "2026-09-30 21:38:44",
-  "duration_seconds": 9.15,
+  "start_time": "2026-09-30 21:53:20",
+  "end_time": "2026-09-30 21:53:29",
+  "duration_seconds": 8.28,
   "pages_scraped": 23,
   "page_range": {
     "start": 23,
