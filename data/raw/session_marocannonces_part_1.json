@@ -1,0 +1,19 @@
+{
+  "session_id": "sess_20261001_122730_marocannonces",
+  "scraper_name": "parallel_worker",
+  "source": "marocannonces",
+  "start_time": "2026-10-01 12:11:53",
+  "end_time": "2026-10-01 12:27:30",
+  "duration_seconds": 937.4,
+  "pages_scraped": 50,
+  "page_range": {
+    "start": 1,
+    "end": 50
+  },
+  "records_extracted": 1000,
+  "records_added": 1000,
+  "duplicates_skipped": 0,
+  "cumulative_seen_ids": 56464,
+  "status": "success",
+  "notes": "Parallel chunk part 1"
+}
