@@ -1,13 +1,13 @@
 {
   "moteur": {
     "last_page": 500,
-    "total_scraped": 20114,
-    "last_updated": "2026-10-01T06:12:39"
+    "total_scraped": 20317,
+    "last_updated": "2026-10-02T05:28:42"
   },
   "wandaloo": {
     "last_page": 42,
     "total_scraped": 381,
-    "last_updated": "2026-10-01T03:59:57"
+    "last_updated": "2026-10-02T04:03:43"
   },
   "avito": {
     "last_page": 12,
@@ -15,63 +15,6 @@
     "last_updated": "2026-09-22T14:44:05"
   },
   "recent_sessions": [
-    {
-      "session_id": "sess_20260929_160740_marocannonces",
-      "scraper_name": "parallel_worker",
-      "source": "marocannonces",
-      "start_time": "2026-09-29 16:07:22",
-      "end_time": "2026-09-29 16:07:40",
-      "duration_seconds": 17.91,
-      "pages_scraped": 1,
-      "page_range": {
-        "start": 1,
-        "end": 1
-      },
-      "records_extracted": 20,
-      "records_added": 20,
-      "duplicates_skipped": 0,
-      "cumulative_seen_ids": 51554,
-      "status": "success",
-      "notes": "Parallel chunk part 1"
-    },
-    {
-      "session_id": "sess_20260929_160911_marocannonces",
-      "scraper_name": "parallel_worker",
-      "source": "marocannonces",
-      "start_time": "2026-09-29 16:08:53",
-      "end_time": "2026-09-29 16:09:11",
-      "duration_seconds": 17.79,
-      "pages_scraped": 1,
-      "page_range": {
-        "start": 1,
-        "end": 1
-      },
-      "records_extracted": 20,
-      "records_added": 20,
-      "duplicates_skipped": 0,
-      "cumulative_seen_ids": 51554,
-      "status": "success",
-      "notes": "Parallel chunk part 1"
-    },
-    {
-      "session_id": "sess_20260929_201434_moteur",
-      "scraper_name": "continuous_harvester",
-      "source": "moteur",
-      "start_time": "2026-09-29 17:22:32",
-      "end_time": "2026-09-29 20:14:34",
-      "duration_seconds": 10321.91,
-      "pages_scraped": 1420,
-      "page_range": {
-        "start": 236,
-        "end": 156
-      },
-      "records_extracted": 15122,
-      "records_added": 2467,
-      "duplicates_skipped": 12655,
-      "cumulative_seen_ids": 54043,
-      "status": "success",
-      "notes": ""
-    },
     {
       "session_id": "sess_20260929_201434_wandaloo",
       "scraper_name": "continuous_harvester",
@@ -392,6 +335,63 @@
       "records_added": 0,
       "duplicates_skipped": 0,
       "cumulative_seen_ids": 55369,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261002_061437_moteur",
+      "scraper_name": "continuous_harvester",
+      "source": "moteur",
+      "start_time": "2026-10-02 03:22:34",
+      "end_time": "2026-10-02 06:14:36",
+      "duration_seconds": 10321.97,
+      "pages_scraped": 1413,
+      "page_range": {
+        "start": 6,
+        "end": 419
+      },
+      "records_extracted": 14995,
+      "records_added": 203,
+      "duplicates_skipped": 14792,
+      "cumulative_seen_ids": 58398,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261002_061437_wandaloo",
+      "scraper_name": "continuous_harvester",
+      "source": "wandaloo",
+      "start_time": "2026-10-02 03:22:34",
+      "end_time": "2026-10-02 06:14:36",
+      "duration_seconds": 10321.97,
+      "pages_scraped": 1413,
+      "page_range": {
+        "start": 49,
+        "end": 112
+      },
+      "records_extracted": 367,
+      "records_added": 0,
+      "duplicates_skipped": 367,
+      "cumulative_seen_ids": 58398,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261002_061438_avito",
+      "scraper_name": "continuous_harvester",
+      "source": "avito",
+      "start_time": "2026-10-02 03:22:34",
+      "end_time": "2026-10-02 06:14:36",
+      "duration_seconds": 10321.97,
+      "pages_scraped": 5,
+      "page_range": {
+        "start": 94,
+        "end": 98
+      },
+      "records_extracted": 0,
+      "records_added": 0,
+      "duplicates_skipped": 0,
+      "cumulative_seen_ids": 58398,
       "status": "success",
       "notes": ""
     }
