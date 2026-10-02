@@ -1,10 +1,10 @@
 {
-  "session_id": "sess_20261001_235027_marocannonces",
+  "session_id": "sess_20261002_014536_marocannonces",
   "scraper_name": "parallel_worker",
   "source": "marocannonces",
-  "start_time": "2026-10-01 23:34:54",
-  "end_time": "2026-10-01 23:50:27",
-  "duration_seconds": 932.66,
+  "start_time": "2026-10-02 01:31:10",
+  "end_time": "2026-10-02 01:45:35",
+  "duration_seconds": 865.41,
   "pages_scraped": 50,
   "page_range": {
     "start": 1,
