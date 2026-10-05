@@ -1,10 +1,10 @@
 {
-  "session_id": "sess_20261005_025452_wandaloo",
+  "session_id": "sess_20261005_125832_wandaloo",
   "scraper_name": "parallel_worker",
   "source": "wandaloo",
-  "start_time": "2026-10-05 02:54:14",
-  "end_time": "2026-10-05 02:54:51",
-  "duration_seconds": 37.33,
+  "start_time": "2026-10-05 12:57:26",
+  "end_time": "2026-10-05 12:58:32",
+  "duration_seconds": 65.02,
   "pages_scraped": 22,
   "page_range": {
     "start": 1,
@@ -13,7 +13,7 @@
   "records_extracted": 311,
   "records_added": 311,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 61632,
+  "cumulative_seen_ids": 61789,
   "status": "success",
   "notes": "Parallel chunk part 1"
 }
