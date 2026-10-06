@@ -1,77 +1,20 @@
 {
   "moteur": {
     "last_page": 500,
-    "total_scraped": 22495,
-    "last_updated": "2026-10-05T05:37:17"
+    "total_scraped": 23173,
+    "last_updated": "2026-10-06T20:17:45"
   },
   "wandaloo": {
     "last_page": 42,
-    "total_scraped": 388,
-    "last_updated": "2026-10-05T03:44:45"
+    "total_scraped": 390,
+    "last_updated": "2026-10-06T19:37:27"
   },
   "avito": {
-    "last_page": 12,
-    "total_scraped": 586,
-    "last_updated": "2026-09-22T14:44:05"
+    "last_page": 200,
+    "total_scraped": 10786,
+    "last_updated": "2026-10-06T18:45:40"
   },
   "recent_sessions": [
-    {
-      "session_id": "sess_20261003_022017_wandaloo",
-      "scraper_name": "continuous_harvester",
-      "source": "wandaloo",
-      "start_time": "2026-10-02 23:28:16",
-      "end_time": "2026-10-03 02:20:16",
-      "duration_seconds": 10320.45,
-      "pages_scraped": 1511,
-      "page_range": {
-        "start": 29,
-        "end": 40
-      },
-      "records_extracted": 369,
-      "records_added": 0,
-      "duplicates_skipped": 369,
-      "cumulative_seen_ids": 59499,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20261003_022017_avito",
-      "scraper_name": "continuous_harvester",
-      "source": "avito",
-      "start_time": "2026-10-02 23:28:16",
-      "end_time": "2026-10-03 02:20:16",
-      "duration_seconds": 10320.45,
-      "pages_scraped": 5,
-      "page_range": {
-        "start": 102,
-        "end": 106
-      },
-      "records_extracted": 0,
-      "records_added": 0,
-      "duplicates_skipped": 0,
-      "cumulative_seen_ids": 59499,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20261003_055856_moteur",
-      "scraper_name": "continuous_harvester",
-      "source": "moteur",
-      "start_time": "2026-10-03 03:06:56",
-      "end_time": "2026-10-03 05:58:56",
-      "duration_seconds": 10320.13,
-      "pages_scraped": 1537,
-      "page_range": {
-        "start": 348,
-        "end": 385
-      },
-      "records_extracted": 15002,
-      "records_added": 15,
-      "duplicates_skipped": 14987,
-      "cumulative_seen_ids": 59514,
-      "status": "success",
-      "notes": ""
-    },
     {
       "session_id": "sess_20261003_055857_wandaloo",
       "scraper_name": "continuous_harvester",
@@ -392,6 +335,63 @@
       "records_added": 0,
       "duplicates_skipped": 0,
       "cumulative_seen_ids": 61652,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261006_203228_moteur",
+      "scraper_name": "continuous_harvester",
+      "source": "moteur",
+      "start_time": "2026-10-06 17:40:26",
+      "end_time": "2026-10-06 20:32:27",
+      "duration_seconds": 10321.05,
+      "pages_scraped": 1436,
+      "page_range": {
+        "start": 307,
+        "end": 243
+      },
+      "records_extracted": 15108,
+      "records_added": 678,
+      "duplicates_skipped": 14430,
+      "cumulative_seen_ids": 73784,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261006_203229_wandaloo",
+      "scraper_name": "continuous_harvester",
+      "source": "wandaloo",
+      "start_time": "2026-10-06 17:40:26",
+      "end_time": "2026-10-06 20:32:27",
+      "duration_seconds": 10321.05,
+      "pages_scraped": 1436,
+      "page_range": {
+        "start": 148,
+        "end": 84
+      },
+      "records_extracted": 379,
+      "records_added": 2,
+      "duplicates_skipped": 377,
+      "cumulative_seen_ids": 73784,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261006_203229_avito",
+      "scraper_name": "continuous_harvester",
+      "source": "avito",
+      "start_time": "2026-10-06 17:40:26",
+      "end_time": "2026-10-06 20:32:27",
+      "duration_seconds": 10321.05,
+      "pages_scraped": 421,
+      "page_range": {
+        "start": 130,
+        "end": 150
+      },
+      "records_extracted": 11408,
+      "records_added": 10200,
+      "duplicates_skipped": 1208,
+      "cumulative_seen_ids": 73784,
       "status": "success",
       "notes": ""
     }
