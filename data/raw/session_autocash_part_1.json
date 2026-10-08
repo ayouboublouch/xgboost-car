@@ -1,19 +1,19 @@
 {
-  "session_id": "sess_20261007_152210_autocash",
+  "session_id": "sess_20261008_152412_autocash",
   "scraper_name": "parallel_worker",
   "source": "autocash",
-  "start_time": "2026-10-07 15:21:26",
-  "end_time": "2026-10-07 15:22:09",
-  "duration_seconds": 42.22,
+  "start_time": "2026-10-08 15:23:32",
+  "end_time": "2026-10-08 15:24:10",
+  "duration_seconds": 37.45,
   "pages_scraped": 30,
   "page_range": {
     "start": 1,
     "end": 30
   },
-  "records_extracted": 245,
-  "records_added": 245,
+  "records_extracted": 250,
+  "records_added": 250,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 76311,
+  "cumulative_seen_ids": 77528,
   "status": "success",
   "notes": "Parallel chunk part 1"
 }
