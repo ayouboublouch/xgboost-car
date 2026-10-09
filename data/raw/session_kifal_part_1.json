@@ -1,19 +1,19 @@
 {
-  "session_id": "sess_20261008_141618_kifal",
+  "session_id": "sess_20261009_140221_kifal",
   "scraper_name": "parallel_worker",
   "source": "kifal",
-  "start_time": "2026-10-08 14:15:15",
-  "end_time": "2026-10-08 14:16:17",
-  "duration_seconds": 61.56,
+  "start_time": "2026-10-09 14:01:22",
+  "end_time": "2026-10-09 14:02:20",
+  "duration_seconds": 57.52,
   "pages_scraped": 50,
   "page_range": {
     "start": 1,
     "end": 50
   },
-  "records_extracted": 380,
-  "records_added": 380,
+  "records_extracted": 386,
+  "records_added": 386,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 77514,
+  "cumulative_seen_ids": 78563,
   "status": "success",
   "notes": "Parallel chunk part 1"
 }
