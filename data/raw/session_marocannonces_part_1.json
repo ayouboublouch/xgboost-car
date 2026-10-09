@@ -1,10 +1,10 @@
 {
-  "session_id": "sess_20261008_125102_marocannonces",
+  "session_id": "sess_20261009_123826_marocannonces",
   "scraper_name": "parallel_worker",
   "source": "marocannonces",
-  "start_time": "2026-10-08 12:35:55",
-  "end_time": "2026-10-08 12:51:00",
-  "duration_seconds": 905.18,
+  "start_time": "2026-10-09 12:23:30",
+  "end_time": "2026-10-09 12:38:24",
+  "duration_seconds": 894.49,
   "pages_scraped": 50,
   "page_range": {
     "start": 1,
@@ -13,7 +13,7 @@
   "records_extracted": 1000,
   "records_added": 1000,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 77510,
+  "cumulative_seen_ids": 78557,
   "status": "success",
   "notes": "Parallel chunk part 1"
 }
