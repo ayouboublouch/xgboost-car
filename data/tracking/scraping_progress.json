@@ -1,13 +1,13 @@
 {
   "moteur": {
     "last_page": 500,
-    "total_scraped": 24130,
-    "last_updated": "2026-10-10T05:38:35"
+    "total_scraped": 24710,
+    "last_updated": "2026-10-10T18:46:57"
   },
   "wandaloo": {
     "last_page": 42,
-    "total_scraped": 392,
-    "last_updated": "2026-10-10T04:20:37"
+    "total_scraped": 396,
+    "last_updated": "2026-10-10T19:20:03"
   },
   "avito": {
     "last_page": 200,
@@ -15,63 +15,6 @@
     "last_updated": "2026-10-07T00:31:07"
   },
   "recent_sessions": [
-    {
-      "session_id": "sess_20261007_022136_wandaloo",
-      "scraper_name": "continuous_harvester",
-      "source": "wandaloo",
-      "start_time": "2026-10-06 23:29:33",
-      "end_time": "2026-10-07 02:21:35",
-      "duration_seconds": 10321.95,
-      "pages_scraped": 1464,
-      "page_range": {
-        "start": 84,
-        "end": 48
-      },
-      "records_extracted": 379,
-      "records_added": 1,
-      "duplicates_skipped": 378,
-      "cumulative_seen_ids": 76148,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20261007_022137_avito",
-      "scraper_name": "continuous_harvester",
-      "source": "avito",
-      "start_time": "2026-10-06 23:29:33",
-      "end_time": "2026-10-07 02:21:35",
-      "duration_seconds": 10321.95,
-      "pages_scraped": 412,
-      "page_range": {
-        "start": 150,
-        "end": 161
-      },
-      "records_extracted": 12579,
-      "records_added": 2067,
-      "duplicates_skipped": 10512,
-      "cumulative_seen_ids": 76148,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20261007_062511_moteur",
-      "scraper_name": "continuous_harvester",
-      "source": "moteur",
-      "start_time": "2026-10-07 03:33:07",
-      "end_time": "2026-10-07 06:25:10",
-      "duration_seconds": 10322.36,
-      "pages_scraped": 1510,
-      "page_range": {
-        "start": 207,
-        "end": 217
-      },
-      "records_extracted": 14993,
-      "records_added": 6,
-      "duplicates_skipped": 14987,
-      "cumulative_seen_ids": 76154,
-      "status": "success",
-      "notes": ""
-    },
     {
       "session_id": "sess_20261007_062513_wandaloo",
       "scraper_name": "continuous_harvester",
@@ -392,6 +335,63 @@
       "records_added": 0,
       "duplicates_skipped": 0,
       "cumulative_seen_ids": 79426,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261010_193338_moteur",
+      "scraper_name": "continuous_harvester",
+      "source": "moteur",
+      "start_time": "2026-10-10 16:41:35",
+      "end_time": "2026-10-10 19:33:36",
+      "duration_seconds": 10321.73,
+      "pages_scraped": 1513,
+      "page_range": {
+        "start": 481,
+        "end": 494
+      },
+      "records_extracted": 15127,
+      "records_added": 580,
+      "duplicates_skipped": 14547,
+      "cumulative_seen_ids": 80096,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261010_193339_wandaloo",
+      "scraper_name": "continuous_harvester",
+      "source": "wandaloo",
+      "start_time": "2026-10-10 16:41:35",
+      "end_time": "2026-10-10 19:33:36",
+      "duration_seconds": 10321.73,
+      "pages_scraped": 1513,
+      "page_range": {
+        "start": 121,
+        "end": 134
+      },
+      "records_extracted": 392,
+      "records_added": 4,
+      "duplicates_skipped": 388,
+      "cumulative_seen_ids": 80096,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261010_193340_avito",
+      "scraper_name": "continuous_harvester",
+      "source": "avito",
+      "start_time": "2026-10-10 16:41:35",
+      "end_time": "2026-10-10 19:33:36",
+      "duration_seconds": 10321.73,
+      "pages_scraped": 5,
+      "page_range": {
+        "start": 185,
+        "end": 189
+      },
+      "records_extracted": 0,
+      "records_added": 0,
+      "duplicates_skipped": 0,
+      "cumulative_seen_ids": 80096,
       "status": "success",
       "notes": ""
     }
