@@ -25,16 +25,34 @@ jobs:
         include:
           - start_page: 1
             max_pages: 90
+            slice_by: ""
+            chunk_id: "part_1"
             page_label: "pages 1-90"
           - start_page: 91
             max_pages: 90
+            slice_by: ""
+            chunk_id: "part_91"
             page_label: "pages 91-180"
           - start_page: 181
             max_pages: 90
+            slice_by: ""
+            chunk_id: "part_181"
             page_label: "pages 181-270"
           - start_page: 271
             max_pages: 80
+            slice_by: ""
+            chunk_id: "part_271"
             page_label: "pages 271-350"
+          - start_page: 1
+            max_pages: 15
+            slice_by: "city"
+            chunk_id: "dim_city"
+            page_label: "dimensional city"
+          - start_page: 1
+            max_pages: 15
+            slice_by: "brand"
+            chunk_id: "dim_brand"
+            page_label: "dimensional brand"
 
     steps:
       - name: Checkout repository
@@ -66,20 +84,26 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p data/raw data/tracking
+          SLICE_FLAG=""
+          if [ -n "${{ matrix.slice_by }}" ]; then
+            SLICE_FLAG="--slice-by ${{ matrix.slice_by }}"
+          fi
           python scrapers/run_all.py \
             --source moteur \
             --start-page ${{ matrix.start_page }} \
             --max-pages ${{ matrix.max_pages }} \
-            --output-filename "scraped_moteur_part_${{ matrix.start_page }}.csv"
+            $SLICE_FLAG \
+            --output-filename "scraped_moteur_${{ matrix.chunk_id }}.csv"
 
       - name: Upload Scraped Moteur Chunk & Telemetry
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: moteur-chunk-${{ matrix.start_page }}
+          name: moteur-chunk-${{ matrix.chunk_id }}
           path: |
-            data/raw/scraped_moteur_part_${{ matrix.start_page }}.*
-            data/tracking/session_moteur_part_${{ matrix.start_page }}.json
+            data/raw/scraped_moteur_${{ matrix.chunk_id }}.*
+            data/tracking/session_moteur_${{ matrix.chunk_id }}.json
+            data/tracking/session_parallel_worker_*.json
           if-no-files-found: ignore
 
   aggregate-and-commit:
@@ -127,10 +151,10 @@ jobs:
           find data/downloads -type f || true
 
           # Move all scraped chunk data files (CSV & Parquet) directly into data/raw/
-          find data/downloads -type f \( -name "scraped_moteur_part_*.csv" -o -name "scraped_moteur_part_*.parquet" \) -exec mv -v {} data/raw/ \; || true
+          find data/downloads -type f \( -name "scraped_moteur_*.csv" -o -name "scraped_moteur_*.parquet" \) -exec mv -v {} data/raw/ \; || true
 
           # Move all session telemetry files directly into data/tracking/
-          find data/downloads -type f -name "session_moteur_part_*.json" -exec mv -v {} data/tracking/ \; || true
+          find data/downloads -type f -name "session_*.json" -exec mv -v {} data/tracking/ \; || true
 
           # Delete downloads directory
           rm -rf data/downloads

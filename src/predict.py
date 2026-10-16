@@ -67,6 +67,10 @@ NUMERIC_FEATURES = [
     "km_per_year",
     "fiscal_power_int",
     "doors_count",
+    "is_dedouanee",
+    "dedouanement_year",
+    "is_premiere_main",
+    "seller_listing_count",
 ]
 CATEGORICAL_FEATURES = [
     "brand",

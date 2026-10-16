@@ -87,28 +87,22 @@ def lookup_impute(
 ) -> pd.Series:
     """
     Impute missing numeric values by brand+model group median,
-    falling back to brand median, then global median.
+    falling back to brand median, then global median using fast vectorized transforms.
     """
-    valid_data = frame.dropna(subset=[col])
-    lookup = valid_data.groupby(list(keys))[col].median()
-    brand_lookup = valid_data.groupby("brand")[col].median() if "brand" in frame.columns else pd.Series(dtype=float)
-    global_median = frame[col].median()
+    s = frame[col].copy()
+    if s.isna().sum() == 0:
+        return s
+
+    global_median = s.median()
     if pd.isna(global_median):
         global_median = 0.0
 
-    def fill(row):
-        if pd.notna(row[col]):
-            return float(row[col])
-        key = tuple(row[k] for k in keys)
-        val = lookup.get(key)
-        if pd.notna(val):
-            return float(val)
-        brand = row.get("brand")
-        if brand and brand in brand_lookup and pd.notna(brand_lookup[brand]):
-            return float(brand_lookup[brand])
-        return float(global_median)
+    # Group median by keys (brand, model)
+    model_medians = frame.groupby(list(keys))[col].transform("median")
+    # Group median by brand
+    brand_medians = frame.groupby("brand")[col].transform("median") if "brand" in frame.columns else pd.Series(np.nan, index=frame.index)
 
-    return frame.apply(fill, axis=1)
+    return s.fillna(model_medians).fillna(brand_medians).fillna(global_median)
 
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -220,6 +214,48 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
             ~df["model"].isin(rare_models), df["brand"] + "_other"
         )
         logger.info("Bucketed %d rare models into '<brand>_other'", len(rare_models))
+
+    # 9. High-signal Moroccan Market Features
+    t_series = df["title_raw"].fillna("").astype(str) if "title_raw" in df.columns else pd.Series("", index=df.index)
+    d_series = df["description_raw"].fillna("").astype(str) if "description_raw" in df.columns else pd.Series("", index=df.index)
+    text_market = (t_series + " " + d_series).str.lower()
+
+    # is_dedouanee: Binary flag (1 if text matches dedouane / import / diwana)
+    df["is_dedouanee"] = text_market.str.contains(
+        r"d[ée]douan[ée]|dedouan|import[ée]|diwana", regex=True
+    ).astype(int)
+
+    # dedouanement_year: Extracted 4-digit year following dédouanée (if present, else vehicle year)
+    extracted_ded_year = text_market.str.extract(
+        r"(?:d[ée]douan(?:[ée]e?|er|ement|ee)?|diwana|import[ée]e?)\s*(?:en|le)?\s*(19[8-9]\d|20[0-2]\d)"
+    )[0]
+    df["dedouanement_year"] = (
+        pd.to_numeric(extracted_ded_year, errors="coerce")
+        .fillna(df["year"])
+        .fillna(2020.0)
+        .astype(float)
+    )
+
+    # is_premiere_main: Binary flag (1 if 1ère main / première main)
+    df["is_premiere_main"] = text_market.str.contains(
+        r"1\s*(?:ère|ere|er)?\s*main|premi[èe]re\s*main", regex=True
+    ).astype(int)
+
+    # seller_listing_count: Number of listings sharing the same seller_phone_hash
+    if "seller_phone_hash" in df.columns:
+        valid_hashes = df["seller_phone_hash"].dropna()
+        valid_hashes = valid_hashes[~valid_hashes.astype(str).str.strip().isin(["", "nan", "None", "<NA>"])]
+        hash_counts = valid_hashes.value_counts()
+        df["seller_listing_count"] = df["seller_phone_hash"].map(hash_counts).fillna(1).astype(int)
+    else:
+        df["seller_listing_count"] = 1
+
+    logger.info(
+        "Moroccan market features: is_dedouanee=%d, is_premiere_main=%d, multi-listing sellers=%d",
+        df["is_dedouanee"].sum(),
+        df["is_premiere_main"].sum(),
+        (df["seller_listing_count"] > 1).sum(),
+    )
 
     if "url" not in df.columns:
         df["url"] = None

@@ -455,10 +455,158 @@ def load_raw_datasets(raw_dir: Path) -> pd.DataFrame:
     return merged
 
 
+# Top model catalogue by brand for Moroccan market NLP spec recovery
+TOP_MODELS_BY_BRAND: Dict[str, List[str]] = {
+    "Dacia": ["Logan", "Sandero", "Duster", "Dokker", "Lodgy", "Spring", "Stepway"],
+    "Renault": ["Clio", "Megane", "Captur", "Kadjar", "Kangoo", "Fluence", "Talisman", "Koleos", "Scenic", "Twingo", "Symbol", "Express", "Arkana", "Laguna"],
+    "Peugeot": ["208", "308", "2008", "3008", "5008", "206", "207", "307", "508", "Partner", "Rifter", "108", "Bipper", "Expert", "301", "407", "309"],
+    "Volkswagen": ["Golf", "Tiguan", "Touareg", "Passat", "Polo", "Caddy", "T-Roc", "Arteon", "Jetta", "Scirocco", "Touran", "Taigo", "CC", "Amarok"],
+    "Hyundai": ["Tucson", "Santa Fe", "Accent", "i10", "i20", "i30", "Creta", "Elantra", "Kona", "Grand i10", "Bayon"],
+    "Mercedes-Benz": ["Classe A", "Classe C", "Classe E", "Classe S", "Classe B", "Classe CLA", "Classe GLA", "Classe GLC", "Classe GLE", "Classe GLS", "CLA", "GLA", "GLC", "GLE", "GLS", "190", "220", "250", "C220", "E220", "Vito", "ML"],
+    "BMW": ["Serie 1", "Serie 3", "Serie 5", "Serie 4", "Serie 6", "Serie 7", "X1", "X3", "X5", "X6", "X4", "X2", "118", "320", "520", "116", "318"],
+    "Audi": ["A1", "A3", "A4", "A5", "A6", "A7", "A8", "Q2", "Q3", "Q5", "Q7", "Q8"],
+    "Toyota": ["Yaris", "Corolla", "Rav4", "Prado", "Land Cruiser", "Hilux", "Auris", "C-HR", "Aygo", "Fortuner"],
+    "Ford": ["Fiesta", "Focus", "Kuga", "Mondeo", "Ranger", "EcoSport", "Fusion", "Transit", "Tourneo", "Puma", "C-Max"],
+    "Citroën": ["C3", "C4", "C5", "Berlingo", "C-Elysee", "C-Elysée", "DS3", "DS4", "DS5", "Xsara", "Nemo", "Jumpy", "C1", "C3 Aircross", "C5 Aircross"],
+    "Kia": ["Picanto", "Sportage", "Rio", "Sorento", "Ceed", "Cerato", "K5", "Carnival", "Seltos", "Niro", "Carens"],
+    "Nissan": ["Qashqai", "Juke", "Micra", "X-Trail", "Navara", "Patrol", "Note"],
+    "Skoda": ["Octavia", "Fabia", "Superb", "Kodiaq", "Karoq", "Kamiq", "Rapid", "Scala"],
+    "Seat": ["Leon", "Ibiza", "Ateca", "Arona", "Toledo", "Tarraco", "Altea"],
+    "Opel": ["Corsa", "Astra", "Insignia", "Mokka", "Grandland", "Crossland"],
+    "Land Rover": ["Range Rover Evoque", "Range Rover Velar", "Range Rover Sport", "Range Rover", "Defender", "Discovery", "Discovery Sport", "Freelander"],
+    "Jeep": ["Renegade", "Compass", "Grand Cherokee", "Wrangler", "Cherokee"],
+    "Fiat": ["500", "Punto", "Tipo", "Panda", "Doblo", "Fiorino", "Ducato", "Bravo", "Grande Punto", "500X"],
+    "Suzuki": ["Celerio", "Swift", "Vitara", "Jimny", "Baleno", "S-Cross", "Alto"],
+}
+
+
+def recover_nlp_specs(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recover missing core specifications (year, fuel_type, transmission, model)
+    from unstructured title_raw and description_raw before dropping rows.
+    """
+    df = df.copy()
+    n_start = len(df)
+    t_raw = df["title_raw"].fillna("").astype(str) if "title_raw" in df.columns else pd.Series("", index=df.index)
+    d_raw = df["description_raw"].fillna("").astype(str) if "description_raw" in df.columns else pd.Series("", index=df.index)
+    combined = (t_raw + " " + d_raw).str.lower()
+
+    # 1. Year Recovery from title_raw and description_raw regex
+    invalid_year_mask = df["year"].isna() | (df["year"] < 1980) | (df["year"] > 2027)
+    recovered_years = 0
+    if invalid_year_mask.any():
+        for idx in df[invalid_year_mask].index:
+            text = combined.loc[idx]
+            if not text.strip():
+                continue
+            # Strip customs year (dedouanee / diwana) to avoid confusing customs clearance year with vehicle model year
+            clean_text = re.sub(
+                r"(?:d[ée]douan(?:[ée]e?|er|ement|ee)?|diwana|import[ée]e?)\s*(?:en|le)?\s*(?:19[8-9]\d|20[0-2]\d)",
+                " ",
+                text,
+            )
+            # Explicit model year pattern
+            m = re.search(r"(?:mod(?:èle|ele)?|ann[ée]e|annee)\s*[:\-\s]*\b(19[8-9]\d|20[0-2]\d)\b", clean_text)
+            if m:
+                df.at[idx, "year"] = float(m.group(1))
+                recovered_years += 1
+            else:
+                # Standalone 4-digit candidate year (protect against Peugeot 2008/3008/5008 model name collision)
+                candidates = re.findall(r"\b(19[8-9]\d|20[0-2]\d)\b", clean_text)
+                brand = str(df.at[idx, "brand"] or "").lower()
+                for cand in candidates:
+                    if brand == "peugeot" and cand in ("2008", "3008", "5008") and len(candidates) > 1:
+                        continue
+                    df.at[idx, "year"] = float(cand)
+                    recovered_years += 1
+                    break
+
+    # 2. Fuel Type Recovery from engine text tokens
+    if "fuel_type" not in df.columns:
+        df["fuel_type"] = None
+    invalid_fuel_mask = (
+        df["fuel_type"].isna()
+        | df["fuel_type"].astype(str).str.lower().isin(["", "nan", "autre", "inconnu", "none", "<na>"])
+    )
+    recovered_fuels = 0
+    if invalid_fuel_mask.any():
+        for idx in df[invalid_fuel_mask].index:
+            text = combined.loc[idx]
+            if not text.strip():
+                continue
+            if re.search(r"\b(hybride|hybrid|phev)\b", text):
+                df.at[idx, "fuel_type"] = "Hybride"
+                recovered_fuels += 1
+            elif re.search(r"\b([ée]lectrique|electrique|ev)\b", text):
+                df.at[idx, "fuel_type"] = "Electrique"
+                recovered_fuels += 1
+            elif re.search(r"\b(dci|hdi|tdi|cdti|crdi|bluetec|bluehdi|gtd|diesel|mazout)\b", text):
+                df.at[idx, "fuel_type"] = "Diesel"
+                recovered_fuels += 1
+            elif re.search(r"\b(tsi|tfsi|puretech|vti|essence)\b", text):
+                df.at[idx, "fuel_type"] = "Essence"
+                recovered_fuels += 1
+
+    # 3. Transmission Recovery from gearbox text tokens
+    if "transmission" not in df.columns:
+        df["transmission"] = None
+    invalid_trans_mask = (
+        df["transmission"].isna()
+        | df["transmission"].astype(str).str.lower().isin(["", "nan", "autre", "inconnu", "none", "<na>"])
+    )
+    recovered_trans = 0
+    if invalid_trans_mask.any():
+        for idx in df[invalid_trans_mask].index:
+            text = combined.loc[idx]
+            if not text.strip():
+                continue
+            if re.search(r"\b(bva|auto|automatique|dsg|edc|eat6|eat8|tiptronic|s-tronic|stronic|7g-tronic|9g-tronic|cvt|pdk)\b", text):
+                df.at[idx, "transmission"] = "Automatique"
+                recovered_trans += 1
+            elif re.search(r"\b(bvm|manuelle|manuel)\b", text):
+                df.at[idx, "transmission"] = "Manuelle"
+                recovered_trans += 1
+
+    # 4. Model Recovery from title_raw & description_raw
+    if "model" not in df.columns:
+        df["model"] = "Autre"
+    invalid_model_mask = (
+        df["model"].isna()
+        | df["model"].astype(str).str.lower().isin(["", "nan", "autre", "autres", "other", "none", "<na>"])
+    )
+    recovered_models = 0
+    if invalid_model_mask.any():
+        for idx in df[invalid_model_mask].index:
+            brand = df.at[idx, "brand"]
+            if not brand or pd.isna(brand) or str(brand).lower() in ("", "nan", "autre"):
+                df.at[idx, "model"] = "Autre"
+                continue
+            cand_text = f"{t_raw.loc[idx]} {d_raw.loc[idx][:120]}"
+            models = TOP_MODELS_BY_BRAND.get(brand, [])
+            matched = False
+            for m in models:
+                if re.search(rf"\b{re.escape(m)}\b", cand_text, re.IGNORECASE):
+                    df.at[idx, "model"] = m
+                    recovered_models += 1
+                    matched = True
+                    break
+            if not matched and (df.at[idx, "model"] is None or str(df.at[idx, "model"]).strip() in ("", "nan", "None", "<NA>")):
+                df.at[idx, "model"] = "Autre"
+
+    logger.info(
+        "NLP Spec Recovery: %d years, %d fuels, %d transmissions, %d models recovered across %d listings",
+        recovered_years, recovered_fuels, recovered_trans, recovered_models, n_start
+    )
+    return df
+
+
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """Execute validation, outlier marking, type casting, deduplication, and cross-source matching."""
     if df is None or df.empty:
         raise ValueError("Cannot clean empty DataFrame")
+
+    # NLP Spec Recovery: Infer missing year, fuel_type, transmission, model from title & description before dropping
+    df = recover_nlp_specs(df)
 
     # Filter out corrupted rows: immediately drop any row where brand, model, price_mad, or year is NaN or empty string
     for c in ["brand", "model"]:
