@@ -112,10 +112,17 @@ def get_scraper_class(source: str) -> Type[BaseScraper]:
         except ImportError:
             from siaracash_scraper import SiaraCashScraper
             return SiaraCashScraper
+    elif source == "auto24":
+        try:
+            from scrapers.auto24_scraper import Auto24Scraper
+            return Auto24Scraper
+        except ImportError:
+            from auto24_scraper import Auto24Scraper
+            return Auto24Scraper
     else:
         raise ValueError(f"Unknown scraper source: '{source}'")
 
-AVAILABLE_SOURCES = ["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "marocannonces", "siaracash"]
+AVAILABLE_SOURCES = ["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "marocannonces", "siaracash", "auto24"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,7 +138,7 @@ def run():
         "--source",
         type=str,
         default="moteur",
-        choices=["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "marocannonces", "siaracash", "all", "none"],
+        choices=["moteur", "wandaloo", "avito", "kifal", "autocash", "marochub", "marocannonces", "siaracash", "auto24", "all", "none"],
         help="Target platform to scrape (default: moteur, use none to skip scraping)",
     )
     parser.add_argument(
@@ -165,6 +172,13 @@ def run():
         help="Custom output CSV filename (e.g. scraped_moteur_part_1.csv)",
     )
     parser.add_argument(
+        "--slice-by",
+        type=str,
+        default=None,
+        choices=["city", "brand", "price", "matrix"],
+        help="Dimensional slicing mode for platforms supporting partitioning (moteur, avito)",
+    )
+    parser.add_argument(
         "--consolidate",
         action="store_true",
         default=False,
@@ -185,10 +199,11 @@ def run():
     logger.info("==========================================================")
     logger.info("Executing Multi-Source Scrapers: %s", targets)
     logger.info(
-        "Primary source: %s | Start page: %d | Max pages: %d | Output file: %s",
+        "Primary source: %s | Start page: %d | Max pages: %d | Slice by: %s | Output file: %s",
         args.source,
         args.start_page,
         args.max_pages,
+        args.slice_by,
         args.output_filename,
     )
     logger.info("Output directory: %s", args.output_dir)
@@ -207,10 +222,14 @@ def run():
         start_time = datetime.datetime.now()
         scraper = cls(output_dir=args.output_dir)
         try:
+            kwargs = {}
+            if args.slice_by and src in ("moteur", "avito"):
+                kwargs["slice_by"] = args.slice_by
             df = scraper.scrape(
                 max_pages=args.max_pages,
                 start_page=args.start_page,
                 output_filename=args.output_filename,
+                **kwargs,
             )
             if df is not None and not df.empty:
                 records_count = len(df)

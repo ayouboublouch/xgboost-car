@@ -483,11 +483,163 @@ class MoteurScraper(BaseScraper):
         logger.info("[%s] Page %d: successfully parsed %d listings", self.source_name, page_num, len(records))
         return records
 
-    def scrape(self, max_pages: int = 60, start_page: int = 1, output_filename: Optional[str] = None, **kwargs) -> pd.DataFrame:
+    CITIES = [
+        "casablanca", "rabat", "marrakech", "tanger", "fes", "agadir",
+        "meknes", "oujda", "kenitra", "tetouan"
+    ]
+    TOP_BRANDS = [
+        "dacia", "renault", "peugeot", "volkswagen", "hyundai", "mercedes-benz",
+        "bmw", "audi", "toyota", "ford", "fiat", "citroen", "kia", "nissan",
+        "skoda", "seat", "opel", "land-rover", "jeep", "honda"
+    ]
+    PRICE_BRACKETS = [
+        (20000, 70000),
+        (70000, 130000),
+        (130000, 220000),
+        (220000, 3000000),
+    ]
+
+    def scrape_page_filtered(
+        self,
+        page_num: int,
+        city: Optional[str] = None,
+        brand: Optional[str] = None,
+        price_min: Optional[int] = None,
+        price_max: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch and parse one page from Moteur.ma with dimensional query parameters."""
+        date_scraped = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        query_params = [f"page={page_num}"]
+        if city:
+            query_params.append(f"ville={city.lower()}")
+        if brand:
+            query_params.append(f"marque={brand.lower()}")
+        if price_min is not None:
+            query_params.append(f"prix_min={price_min}")
+        if price_max is not None:
+            query_params.append(f"prix_max={price_max}")
+
+        url = f"{self.BASE_URL}?{'&'.join(query_params)}"
+        html = self.fetch_page(url, headers=DEFAULT_BROWSER_HEADERS)
+
+        if not html:
+            logger.debug("[%s] Empty response for URL: %s", self.source_name, url)
+            return []
+
+        records = self.parse_page(html, date_scraped)
+        logger.info(
+            "[%s] [Slice %s|%s|%s-%s] Page %d: parsed %d listings",
+            self.source_name,
+            city or "all",
+            brand or "all",
+            price_min or 0,
+            price_max or "+inf",
+            page_num,
+            len(records),
+        )
+        return records
+
+    def scrape_dimensional(
+        self,
+        dimension: str = "city",
+        max_pages_per_slice: int = 15,
+        cities: Optional[List[str]] = None,
+        brands: Optional[List[str]] = None,
+        price_brackets: Optional[List[Any]] = None,
+        output_filename: Optional[str] = None,
+    ) -> pd.DataFrame:
         """
-        Scrapes up to max_pages starting from start_page (e.g. start_page=61, max_pages=60).
-        Gracefully halts if consecutive empty pages are encountered.
+        Bypasses standard pagination caps by dimensional slicing across:
+        - 'city': iterates top 10 Moroccan cities independently
+        - 'brand': iterates top 20 automotive brands independently
+        - 'price': slices into 4 distinct budget brackets
+        - 'matrix': crosses top cities x top brands for maximum long-tail yield
         """
+        logger.info(
+            "[%s] Starting DIMENSIONAL SLICING (mode: %s, max_pages_per_slice=%d) ...",
+            self.source_name,
+            dimension,
+            max_pages_per_slice,
+        )
+        all_records: List[Dict[str, Any]] = []
+        target_cities = cities or self.CITIES
+        target_brands = brands or self.TOP_BRANDS
+        target_brackets = price_brackets or self.PRICE_BRACKETS
+
+        slices: List[Dict[str, Any]] = []
+        if dimension == "city":
+            for c in target_cities:
+                slices.append({"city": c, "brand": None, "pmin": None, "pmax": None, "desc": f"City:{c}"})
+        elif dimension == "brand":
+            for b in target_brands:
+                slices.append({"city": None, "brand": b, "pmin": None, "pmax": None, "desc": f"Brand:{b}"})
+        elif dimension == "price":
+            for pmin, pmax in target_brackets:
+                slices.append({"city": None, "brand": None, "pmin": pmin, "pmax": pmax, "desc": f"Price:{pmin}-{pmax}"})
+        elif dimension == "matrix":
+            for c in target_cities[:5]:  # Top 5 metros
+                for b in target_brands[:10]:  # Top 10 volume brands
+                    slices.append({"city": c, "brand": b, "pmin": None, "pmax": None, "desc": f"{c}x{b}"})
+        else:
+            raise ValueError(f"Unknown dimension: '{dimension}'. Choose city, brand, price, or matrix.")
+
+        logger.info("[%s] Generated %d query slices to crawl.", self.source_name, len(slices))
+
+        for idx, sl in enumerate(slices, 1):
+            logger.info(">>> Processing slice %d/%d: %s ...", idx, len(slices), sl["desc"])
+            consecutive_empty = 0
+            for p in range(1, max_pages_per_slice + 1):
+                batch = self.scrape_page_filtered(
+                    page_num=p,
+                    city=sl["city"],
+                    brand=sl["brand"],
+                    price_min=sl["pmin"],
+                    price_max=sl["pmax"],
+                )
+                if not batch:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 2:
+                        logger.info("  Slice %s finished at page %d (empty).", sl["desc"], p)
+                        break
+                else:
+                    consecutive_empty = 0
+                    all_records.extend(batch)
+                self.sleep()
+
+        if not all_records:
+            logger.warning("[%s] Slicing harvested 0 records. Writing nothing.", self.source_name)
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_records)
+        if "listing_id" in df.columns:
+            initial = len(df)
+            df = df.drop_duplicates(subset=["listing_id"]).reset_index(drop=True)
+            logger.info("[%s] Deduplicated from %d to %d unique listings.", self.source_name, initial, len(df))
+
+        logger.info("[%s] Dimensional slicing completed. Total unique listings: %d", self.source_name, len(df))
+        self.save_output(df, custom_filename=output_filename)
+        return df
+
+    def scrape(
+        self,
+        max_pages: int = 60,
+        start_page: int = 1,
+        output_filename: Optional[str] = None,
+        slice_by: Optional[str] = None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Scrapes Moteur.ma catalog.
+        If slice_by is specified ('city', 'brand', 'price', 'matrix'), shifts to dimensional slicing.
+        Otherwise, runs standard sequential pagination.
+        """
+        if slice_by:
+            return self.scrape_dimensional(
+                dimension=slice_by,
+                max_pages_per_slice=max_pages,
+                output_filename=output_filename,
+            )
+
         end_page = start_page + max_pages - 1
         logger.info("[%s] Starting crawl for pages %d to %d (max %d pages) ...", self.source_name, start_page, end_page, max_pages)
         all_records: List[Dict[str, Any]] = []
@@ -520,7 +672,8 @@ def main():
     parser = argparse.ArgumentParser(description="Moteur.ma Production Scraper")
     parser.add_argument("--start-page", type=int, default=1, help="Initial page to scrape (default: 1)")
     parser.add_argument("--max-pages", type=int, default=60, help="Max pages to scrape (default: 60)")
-    parser.add_argument("--output-filename", type=str, default=None, help="Custom output CSV filename (e.g. scraped_moteur_part_1.csv)")
+    parser.add_argument("--slice-by", type=str, default=None, choices=["city", "brand", "price", "matrix"], help="Dimensional slicing mode")
+    parser.add_argument("--output-filename", type=str, default=None, help="Custom output CSV filename")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory (default: data/raw)")
     args = parser.parse_args()
 
@@ -528,6 +681,7 @@ def main():
     df = scraper.scrape(
         max_pages=args.max_pages,
         start_page=args.start_page,
+        slice_by=args.slice_by,
         output_filename=args.output_filename,
     )
     print(f"Successfully scraped and saved {len(df)} records for Moteur.ma")
@@ -535,3 +689,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -392,11 +392,47 @@ class AvitoScraper(BaseScraper):
 
         return results
 
-    def scrape_page(self, page_num: int) -> List[Dict[str, Any]]:
-        """Fetch and parse one page from Avito.ma car listings."""
+    def _find_ads(self, next_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Fast direct retrieval of listings from Next.js props, with recursive fallback."""
+        try:
+            component_props = next_data.get("props", {}).get("pageProps", {}).get("componentProps", {})
+            ads_data = component_props.get("ads", {})
+            if isinstance(ads_data, dict) and "ads" in ads_data:
+                ads_list = ads_data["ads"]
+                if isinstance(ads_list, list) and ads_list:
+                    return ads_list
+        except Exception:
+            pass
+        return self._find_ads_recursive(next_data)
+
+    CITIES = [
+        "casablanca", "rabat", "marrakech", "tanger", "fes", "agadir",
+        "meknes", "oujda", "kenitra", "tetouan"
+    ]
+    PRICE_BRACKETS = [
+        (20000, 70000),
+        (70000, 130000),
+        (130000, 220000),
+        (220000, 3000000),
+    ]
+
+    def scrape_page(
+        self,
+        page_num: int,
+        city: Optional[str] = None,
+        price_min: Optional[int] = None,
+        price_max: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch and parse one page from Avito.ma car listings with optional filters."""
         params = {"o": page_num}
+        if price_min is not None:
+            params["price_min"] = price_min
+        if price_max is not None:
+            params["price_max"] = price_max
+
+        base_url = f"https://www.avito.ma/fr/{city.lower()}/voitures-%C3%A0_vendre" if city else self.BASE_URL
         date_scraped = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        html = self.fetch_page(self.BASE_URL, params=params)
+        html = self.fetch_page(base_url, params=params)
         if not html:
             # Fallback URL format
             alt_url = f"https://www.avito.ma/fr/maroc/voitures_d_occasion--%C3%A0_vendre?o={page_num}"
@@ -409,7 +445,7 @@ class AvitoScraper(BaseScraper):
         results = []
         next_data = self._extract_next_data(html)
         if next_data:
-            ad_objects = self._find_ads_recursive(next_data)
+            ad_objects = self._find_ads(next_data)
             for ad_dict in ad_objects:
                 parsed = self._extract_ad_from_json(ad_dict, date_scraped)
                 if parsed:
@@ -419,8 +455,90 @@ class AvitoScraper(BaseScraper):
             dom_ads = self._extract_ads_from_dom(html, date_scraped)
             results.extend(dom_ads)
 
-        logger.info("[%s] Page %d: successfully parsed %d listings", self.source_name, page_num, len(results))
+        logger.info(
+            "[%s] [Slice %s|%s-%s] Page %d: successfully parsed %d listings",
+            self.source_name,
+            city or "maroc",
+            price_min or 0,
+            price_max or "+inf",
+            page_num,
+            len(results),
+        )
         return results
+
+    def scrape_dimensional(
+        self,
+        dimension: str = "city",
+        max_pages_per_slice: int = 10,
+        cities: Optional[List[str]] = None,
+        price_brackets: Optional[List[Any]] = None,
+        output_filename: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Bypasses Avito's pagination ceilings (~100-300 pages) by dimensional slicing across:
+        - 'city': iterates top 10 Moroccan cities independently
+        - 'price': slices into 4 distinct budget brackets
+        - 'matrix': crosses top cities x price brackets to access 100% of buried active market
+        """
+        logger.info(
+            "[%s] Starting DIMENSIONAL SLICING (mode: %s, max_pages_per_slice=%d) ...",
+            self.source_name,
+            dimension,
+            max_pages_per_slice,
+        )
+        all_records: List[Dict[str, Any]] = []
+        target_cities = cities or self.CITIES
+        target_brackets = price_brackets or self.PRICE_BRACKETS
+
+        slices: List[Dict[str, Any]] = []
+        if dimension == "city":
+            for c in target_cities:
+                slices.append({"city": c, "pmin": None, "pmax": None, "desc": f"City:{c}"})
+        elif dimension == "price":
+            for pmin, pmax in target_brackets:
+                slices.append({"city": None, "pmin": pmin, "pmax": pmax, "desc": f"Price:{pmin}-{pmax}"})
+        elif dimension == "matrix":
+            for c in target_cities[:5]:
+                for pmin, pmax in target_brackets:
+                    slices.append({"city": c, "pmin": pmin, "pmax": pmax, "desc": f"{c} [{pmin}-{pmax}]"})
+        else:
+            raise ValueError(f"Unknown dimension: '{dimension}'. Choose city, price, or matrix.")
+
+        logger.info("[%s] Generated %d query slices to crawl.", self.source_name, len(slices))
+
+        for idx, sl in enumerate(slices, 1):
+            logger.info(">>> Processing slice %d/%d: %s ...", idx, len(slices), sl["desc"])
+            consecutive_empty = 0
+            for p in range(1, max_pages_per_slice + 1):
+                batch = self.scrape_page(
+                    page_num=p,
+                    city=sl["city"],
+                    price_min=sl["pmin"],
+                    price_max=sl["pmax"],
+                )
+                if not batch:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 2:
+                        logger.info("  Slice %s reached end at page %d.", sl["desc"], p)
+                        break
+                else:
+                    consecutive_empty = 0
+                    all_records.extend(batch)
+                self.sleep()
+
+        if not all_records:
+            logger.warning("[%s] Slicing harvested 0 records.", self.source_name)
+            return pd.DataFrame(columns=SCHEMA_FIELDS)
+
+        df = pd.DataFrame(all_records)
+        if "listing_id" in df.columns:
+            initial = len(df)
+            df = df.drop_duplicates(subset=["listing_id"]).reset_index(drop=True)
+            logger.info("[%s] Deduplicated from %d to %d unique listings.", self.source_name, initial, len(df))
+
+        logger.info("[%s] Dimensional slicing completed. Total unique listings: %d", self.source_name, len(df))
+        self.save_output(df, custom_filename=output_filename)
+        return df
 
     def scrape(
         self,
@@ -428,15 +546,24 @@ class AvitoScraper(BaseScraper):
         start_page: int = 1,
         output_filename: Optional[str] = None,
         use_matrix: bool = False,
+        slice_by: Optional[str] = None,
         letters: Optional[List[str]] = None,
         years: Optional[List[int]] = None,
         **kwargs,
     ) -> pd.DataFrame:
         """
         Scrape Avito.ma car listings.
-        By default, paginates sequentially through the main car catalog from start_page for up to max_pages.
+        If slice_by is set ('city', 'price', 'matrix'), uses dimensional slicing.
         If use_matrix is True, runs iteration matrix across Letters x Years.
+        Otherwise, paginates sequentially through the main car catalog.
         """
+        if slice_by:
+            return self.scrape_dimensional(
+                dimension=slice_by,
+                max_pages_per_slice=max_pages,
+                output_filename=output_filename,
+            )
+
         all_records = []
 
         if use_matrix:
@@ -464,7 +591,7 @@ class AvitoScraper(BaseScraper):
                                     "[%s] %d consecutive empty queries. Runner IP blocked by Cloudflare. Halting.",
                                     self.source_name,
                                     consecutive_empty,
-                                )
+                                    )
                                 break
                         else:
                             consecutive_empty = 0
@@ -502,16 +629,20 @@ class AvitoScraper(BaseScraper):
 def main():
     parser = argparse.ArgumentParser(description="Avito.ma Scraping Provider")
     parser.add_argument("--max-pages", type=int, default=1, help="Max pages per query (default: 1)")
+    parser.add_argument("--slice-by", type=str, default=None, choices=["city", "price", "matrix"], help="Dimensional slicing mode")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory")
     parser.add_argument("--dry-run", action="store_true", help="Quick dry run (A-B, 2024)")
     args = parser.parse_args()
 
     scraper = AvitoScraper(output_dir=args.output_dir)
-    if args.dry_run:
-        scraper.scrape(max_pages=1, letters=["A", "B"], years=[2024])
+    if args.slice_by:
+        scraper.scrape(max_pages=args.max_pages, slice_by=args.slice_by)
+    elif args.dry_run:
+        scraper.scrape(max_pages=1, use_matrix=True, letters=["A", "B"], years=[2024])
     else:
         scraper.scrape(max_pages=args.max_pages)
 
 
 if __name__ == "__main__":
     main()
+
