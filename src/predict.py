@@ -335,6 +335,13 @@ def run_inference(
     print(predictions_df[["listing_id", "url", "brand", "model", "year", "price_mad", "predicted_price_mad", "deviation_percentage_%", "market_deal_rating"]].head(10).to_string(index=False))
     print("=" * 80 + "\n")
 
+    # Automated deal alerts and ingestion telemetry dispatch
+    try:
+        from src.notify import notify_after_prediction
+        notify_after_prediction()
+    except Exception as exc:
+        logger.warning("Automated notification dispatch skipped or encountered error: %s", exc)
+
     return predictions_df
 
 
@@ -357,6 +364,11 @@ def main():
         type=str,
         default="models/car_price_predictions.csv",
         help="Output predictions CSV path (default: models/car_price_predictions.csv)",
+    )
+    parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="Disable automatic Telegram/WhatsApp deal alert notifications",
     )
     args = parser.parse_args()
 
