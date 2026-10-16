@@ -1,0 +1,19 @@
+{
+  "session_id": "sess_20261016_072748_siaracash",
+  "scraper_name": "parallel_worker",
+  "source": "siaracash",
+  "start_time": "2026-10-16 07:25:57",
+  "end_time": "2026-10-16 07:27:48",
+  "duration_seconds": 110.46,
+  "pages_scraped": 25,
+  "page_range": {
+    "start": 1,
+    "end": 25
+  },
+  "records_extracted": 295,
+  "records_added": 295,
+  "duplicates_skipped": 0,
+  "cumulative_seen_ids": 83182,
+  "status": "success",
+  "notes": "Parallel chunk part 1"
+}

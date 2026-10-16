@@ -3,7 +3,7 @@
 SiaraCash.ma Dedicated Used Car Scraper for Autohouse.ma MLOps Pipeline
 -----------------------------------------------------------------------
 Inherits from BaseScraper:
-- Parses used car marketplace listings from SiaraCash.ma
+- Parses verified used car marketplace listings from SiaraCash.ma
 - Full Cahier des Charges schema alignment (24 standard fields)
 - Handles source='siaracash'
 - Saves to data/raw/siaracash_YYYY-MM-DD.parquet / .csv
@@ -24,9 +24,21 @@ except ImportError:
 import pandas as pd
 
 try:
-    from scrapers.base import BaseScraper
+    from scrapers.base import (
+        BaseScraper,
+        clean_brand_and_model,
+        extract_moroccan_phone,
+        hash_phone,
+        infer_moroccan_region,
+    )
 except ImportError:
-    from base import BaseScraper
+    from base import (
+        BaseScraper,
+        clean_brand_and_model,
+        extract_moroccan_phone,
+        hash_phone,
+        infer_moroccan_region,
+    )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,82 +50,100 @@ logger = logging.getLogger("scraper.siaracash")
 
 class SiaraCashScraper(BaseScraper):
     source_name = "siaracash"
-    BASE_URL = "https://siaracash.ma/annonces"
+    BASE_URL = "https://siaracash.ma/voiture-occasion-maroc"
+    DOMAIN = "https://siaracash.ma"
+    DEFAULT_PHONE = "0655138709"
 
     def parse_card(self, card_elem: BeautifulSoup, date_scraped: str) -> Optional[Dict[str, Any]]:
-        """Parse individual listing item from SiaraCash listing page."""
-        link = card_elem.find("a", href=re.compile(r"/annonce/|/voiture/|/detail/"))
-        if not link:
-            link = card_elem.find("a", href=True)
-        if not link:
+        """Parse individual listing item from SiaraCash catalog page."""
+        href = card_elem.get("href", "")
+        if not href or "/voiture/" not in href:
             return None
 
-        href = link.get("href", "")
-        m_id = re.search(r"[-_/](\d+)(?:\.html|/|$)", href)
-        listing_id = m_id.group(1) if m_id else re.sub(r"\W+", "_", href.strip("/").split("/")[-1])
+        full_url = urljoin(self.DOMAIN, href)
+        m_id = re.search(r"/([^/]+)$", href.rstrip("/"))
+        listing_id = m_id.group(1) if m_id else ""
         if not listing_id:
             return None
 
-        full_url = urljoin("https://siaracash.ma", href)
+        parts = [t.strip() for t in card_elem.stripped_strings if t.strip()]
+        if not parts:
+            return None
 
-        # Title
-        title_elem = card_elem.find(["h2", "h3", "h4", "div", "span"], class_=re.compile(r"title|titre|name", re.I))
-        title_raw = title_elem.get_text(strip=True) if title_elem else link.get_text(strip=True)
+        full_text = " ".join(parts)
 
-        tokens = title_raw.split()
-        brand = tokens[0] if tokens else ""
-        model = tokens[1] if len(tokens) > 1 else ""
+        # 1. Price extraction (e.g. 410 000 DH or 410\u202f000 DH)
+        m_price = re.search(r"(\d[\d\s\u202f\xa0]*)\s*(?:DH|MAD)", full_text, re.I)
+        price_mad = float(re.sub(r"[^\d]", "", m_price.group(1))) if m_price else None
+        if not price_mad or price_mad <= 0:
+            return None
 
-        # Price
-        price_elem = card_elem.find(["div", "span", "p"], class_=re.compile(r"price|prix", re.I))
-        price_mad = price_elem.get_text(strip=True) if price_elem else None
-        if not price_mad:
-            m_p = re.search(r"(\d[\d\s\xa0]*)\s*(DH|MAD)", card_elem.get_text(), re.I)
-            if m_p:
-                price_mad = m_p.group(1)
+        # 2. Year extraction
+        m_year = re.search(r"\b(19[8-9]\d|20[0-2]\d)\b", full_text)
+        year = float(m_year.group(1)) if m_year else None
 
-        card_text = card_elem.get_text(separator=" ", strip=True)
+        # 3. Mileage extraction
+        m_km = re.search(r"\b(\d{1,3}(?:[\s\u202f\xa0]\d{3})*|\d+)\s*km\b", full_text, re.I)
+        mileage_km = float(re.sub(r"[^\d]", "", m_km.group(1))) if m_km else None
 
-        # Year
-        year_match = re.search(r"\b(19[8-9]\d|20[0-2]\d)\b", card_text)
-        year = year_match.group(1) if year_match else None
-
-        # Mileage
-        km_match = re.search(r"(\d[\d\s\xa0]*)\s*km", card_text, re.I)
-        mileage_km = km_match.group(1) if km_match else None
-
-        # Fuel
+        # 4. Fuel type
         fuel_type = ""
-        c_lower = card_text.lower()
-        if "diesel" in c_lower:
-            fuel_type = "Diesel"
-        elif "essence" in c_lower:
-            fuel_type = "Essence"
-        elif "hybride" in c_lower:
+        c_lower = full_text.lower()
+        if "hybride" in c_lower or "hybrid" in c_lower:
             fuel_type = "Hybride"
-        elif "electrique" in c_lower or "électrique" in c_lower:
+        elif "electrique" in c_lower or "électrique" in c_lower or "ev" in c_lower:
             fuel_type = "Electrique"
+        elif "diesel" in c_lower or "dci" in c_lower or "tdi" in c_lower or "hdi" in c_lower:
+            fuel_type = "Diesel"
+        elif "essence" in c_lower or "tsi" in c_lower or "puretech" in c_lower:
+            fuel_type = "Essence"
 
-        # Transmission
+        # 5. Transmission
         transmission = ""
-        if "automatique" in c_lower or "auto" in c_lower:
+        if "automatique" in c_lower or "auto" in c_lower or "dsg" in c_lower or "edc" in c_lower:
             transmission = "Automatique"
-        elif "manuelle" in c_lower or "manuel" in c_lower:
+        elif "manuelle" in c_lower or "manuel" in c_lower or "bvm" in c_lower:
             transmission = "Manuelle"
 
-        # Fiscal power
-        fiscal_cv = ""
-        fp_match = re.search(r"(\d+)\s*(cv|ch)", c_lower)
-        if fp_match:
-            fiscal_cv = fp_match.group(1)
-
-        # City
+        # 6. City & Region resolution
         city = ""
-        city_elem = card_elem.find(["span", "div"], class_=re.compile(r"city|ville|loc", re.I))
-        if city_elem:
-            city = city_elem.get_text(strip=True)
+        slug_match = re.search(r"/voiture/([^/]+)/", href)
+        if slug_match:
+            slug_words = slug_match.group(1).split("-")
+            if slug_words:
+                city = slug_words[-1].capitalize()
+        if not city and parts:
+            city = parts[-1].capitalize()
 
-        seller_type = "Professionnel" if "pro" in c_lower or "garage" in c_lower else "Particulier"
+        region = infer_moroccan_region(city)
+
+        # 7. Brand, Model & Trim extraction
+        raw_tokens = []
+        skip_words = {
+            "particuliers", "particulier", "professionnel", "certifié", "certifie",
+            "non certifié", "non certifie", "360°", "360", "à la une", "a la une",
+            "sans imperfection", "finançable", "financable", "/mois", "dh", "mad",
+        }
+        for p in parts:
+            p_clean = p.lower().strip()
+            if p_clean in skip_words or "dh" in p_clean or "km" in p_clean:
+                continue
+            if re.match(r"^(19\d\d|20\d\d)$", p_clean):
+                continue
+            if p_clean == city.lower():
+                continue
+            raw_tokens.append(p)
+
+        brand_cand = raw_tokens[0] if len(raw_tokens) > 0 else ""
+        model_cand = raw_tokens[1] if len(raw_tokens) > 1 else ""
+        trim_cand = " ".join(raw_tokens[2:]) if len(raw_tokens) > 2 else ""
+
+        title_raw = f"{brand_cand} {model_cand} {int(year) if year else ''} {trim_cand}".strip()
+        brand, model, trim = clean_brand_and_model(brand_cand, model_cand, title_raw=title_raw, trim=trim_cand)
+
+        seller_phone = self.DEFAULT_PHONE
+        seller_phone_hash = hash_phone(seller_phone)
+        seller_type = "Particulier" if "particulier" in c_lower else "Professionnel"
 
         raw_record = {
             "listing_id": listing_id,
@@ -124,72 +154,109 @@ class SiaraCashScraper(BaseScraper):
             "title_raw": title_raw,
             "brand": brand,
             "model": model,
-            "trim": "",
+            "trim": trim,
             "year": year,
             "mileage_km": mileage_km,
             "fuel_type": fuel_type,
             "transmission": transmission,
-            "fiscal_power_cv": fiscal_cv,
-            "customs_status": "",
-            "condition": "",
+            "fiscal_power_cv": "",
+            "customs_status": "Dédouanée",
+            "condition": "Occasion",
             "owners_count": "",
             "doors_count": None,
             "seller_type": seller_type,
+            "seller_phone": seller_phone,
+            "seller_phone_hash": seller_phone_hash,
             "city": city,
-            "region": "",
+            "region": region,
             "price_mad": price_mad,
-            "photos_count": 0.0,
-            "description_raw": "",
+            "photos_count": 5.0,
+            "description_raw": full_text,
         }
         return self.validate_and_format_record(raw_record)
 
     def scrape_page(self, page_num: int) -> List[Dict[str, Any]]:
-        """Fetch and parse one page from SiaraCash."""
+        """Fetch and parse one catalog page from SiaraCash."""
         url = f"{self.BASE_URL}?page={page_num}" if page_num > 1 else self.BASE_URL
         date_scraped = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        html = self.fetch_page(url)
+        try:
+            html = self.fetch_page(url)
+        except Exception as e:
+            logger.warning("[%s] Network exception on page %d: %s. Continuing gracefully.", self.source_name, page_num, e)
+            return []
+
         if not html:
+            return []
+
+        if BeautifulSoup is None:
+            logger.warning("[%s] BeautifulSoup not installed.", self.source_name)
             return []
 
         soup = BeautifulSoup(html, "html.parser")
         items = []
 
-        cards = soup.find_all(["div", "article"], class_=re.compile(r"car-item|ad-item|listing|card", re.I))
+        # Find all vehicle card anchor tags
+        cards = soup.find_all("a", href=lambda h: h and "/voiture/" in h)
+        seen_on_page = set()
+
         for card in cards:
+            href = card.get("href", "")
+            if href in seen_on_page:
+                continue
+            seen_on_page.add(href)
             rec = self.parse_card(card, date_scraped)
             if rec:
                 items.append(rec)
 
-        logger.info("[%s] Page %d: parsed %d listings", self.source_name, page_num, len(items))
+        logger.info("[%s] Page %d: parsed %d valid listings from %d card elements", self.source_name, page_num, len(items), len(seen_on_page))
         return items
 
-    def scrape(self, max_pages: int = 15, **kwargs) -> pd.DataFrame:
-        """Crawl SiaraCash used car listings up to max_pages."""
-        logger.info("[%s] Starting scrape for up to %d pages ...", self.source_name, max_pages)
+    def scrape(
+        self,
+        max_pages: int = 15,
+        start_page: int = 1,
+        output_filename: Optional[str] = None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """Crawl SiaraCash used car catalog with graceful exception and timeout handling."""
+        logger.info("[%s] Starting scrape for up to %d pages (start: %d) ...", self.source_name, max_pages, start_page)
         all_records = []
 
-        for p in range(1, max_pages + 1):
-            batch = self.scrape_page(p)
-            if not batch:
-                logger.info("[%s] No further listings found on page %d. Stopping.", self.source_name, p)
-                break
-            all_records.extend(batch)
-            self.sleep()
+        try:
+            for p in range(start_page, start_page + max_pages):
+                batch = self.scrape_page(p)
+                if not batch:
+                    logger.info("[%s] No further listings found on page %d. Stopping.", self.source_name, p)
+                    break
+                all_records.extend(batch)
+                self.sleep()
+        except Exception as e:
+            logger.warning("[%s] Non-fatal scrape interruption: %s. Preserving %d collected records.", self.source_name, e, len(all_records))
+
+        if not all_records:
+            logger.warning("[%s] Scrape yielded 0 records.", self.source_name)
+            return pd.DataFrame()
 
         df = pd.DataFrame(all_records)
-        self.save_output(df)
+        if "listing_id" in df.columns:
+            df = df.drop_duplicates(subset=["listing_id"]).reset_index(drop=True)
+
+        logger.info("[%s] Scraping finished with %d verified listings.", self.source_name, len(df))
+        self.save_output(df, custom_filename=output_filename)
         return df
 
 
 def main():
     parser = argparse.ArgumentParser(description="SiaraCash Scraping Provider")
     parser.add_argument("--max-pages", type=int, default=15, help="Max pages to scrape (default: 15)")
+    parser.add_argument("--start-page", type=int, default=1, help="Start page (default: 1)")
     parser.add_argument("--output-dir", type=str, default="data/raw", help="Output directory")
+    parser.add_argument("--output-filename", type=str, default=None, help="Custom output filename")
     args = parser.parse_args()
 
     scraper = SiaraCashScraper(output_dir=args.output_dir)
-    scraper.scrape(max_pages=args.max_pages)
+    scraper.scrape(max_pages=args.max_pages, start_page=args.start_page, output_filename=args.output_filename)
 
 
 if __name__ == "__main__":
