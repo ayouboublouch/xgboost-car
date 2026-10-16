@@ -402,14 +402,14 @@ def send_pipeline_notifications(
     summary: bool = True,
     deals: bool = True,
     top_n: int = 5,
-    channel: str = "all",
+    channel: str = "telegram",
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
     Main notification dispatcher:
       - Builds Ingestion Summary
       - Builds Top Deal Alerts
-      - Sends to Telegram and/or WhatsApp
+      - Sends to Telegram (default primary) and/or WhatsApp
     """
     results: Dict[str, Any] = {
         "summary_sent_telegram": False,
@@ -421,7 +421,7 @@ def send_pipeline_notifications(
     }
 
     telegram_target = channel.lower() in ("all", "telegram")
-    whatsapp_target = channel.lower() in ("all", "whatsapp")
+    whatsapp_target = channel.lower() in ("all", "whatsapp") and is_whatsapp_configured()
 
     # 1. Summary Notification
     if summary:
@@ -481,7 +481,7 @@ def send_pipeline_notifications(
 def notify_after_prediction(top_n: int = 5) -> Dict[str, Any]:
     """
     Convenience hook called at the end of src/predict.py.
-    Safely executes without throwing exceptions.
+    Safely executes without throwing exceptions. Defaults to primary channel (Telegram).
     """
     try:
         if not is_telegram_configured() and not is_whatsapp_configured():
@@ -491,8 +491,8 @@ def notify_after_prediction(top_n: int = 5) -> Dict[str, Any]:
             )
             return {"status": "skipped", "reason": "unconfigured"}
 
-        logger.info("Triggering automated post-prediction deal notifications...")
-        return send_pipeline_notifications(summary=True, deals=True, top_n=top_n)
+        logger.info("Triggering automated post-prediction deal notifications via Telegram...")
+        return send_pipeline_notifications(summary=True, deals=True, top_n=top_n, channel="telegram")
     except Exception as exc:
         logger.warning("Automated notification hook encountered error (safe ignore): %s", exc)
         return {"status": "error", "error": str(exc)}
@@ -504,13 +504,12 @@ def send_test_ping() -> bool:
     ping_html = (
         f"🤖 <b>Autohouse.ma Notification Engine Test</b>\n"
         f"🕒 Timestamp: <code>{now_str}</code>\n"
-        f"✅ Bot API Connectivity: <b>Verified OK</b>\n"
+        f"✅ Telegram Bot API Connectivity: <b>Verified OK</b>\n"
         f"🚀 Production MLOps telemetry ready."
     )
-    print("Dispatching diagnostic heartbeat ping...")
+    print("Dispatching diagnostic heartbeat ping to Telegram...")
     res_tg = send_telegram_message(ping_html)
-    res_wa = send_whatsapp_message(ping_html)
-    return res_tg or res_wa
+    return res_tg
 
 
 def main():
@@ -521,9 +520,9 @@ def main():
     parser.add_argument(
         "--channel",
         type=str,
-        default="all",
+        default="telegram",
         choices=["all", "telegram", "whatsapp"],
-        help="Target notification channel (default: all)",
+        help="Target notification channel (default: telegram)",
     )
     parser.add_argument("--test", action="store_true", help="Send test connectivity ping")
     parser.add_argument(
