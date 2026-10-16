@@ -1,77 +1,20 @@
 {
   "moteur": {
     "last_page": 500,
-    "total_scraped": 26114,
-    "last_updated": "2026-10-16T04:18:49"
+    "total_scraped": 26751,
+    "last_updated": "2026-10-16T18:31:33"
   },
   "wandaloo": {
     "last_page": 42,
-    "total_scraped": 381,
-    "last_updated": "2026-10-01T03:59:57"
+    "total_scraped": 383,
+    "last_updated": "2026-10-16T16:39:59"
   },
   "avito": {
-    "last_page": 12,
-    "total_scraped": 586,
-    "last_updated": "2026-09-22T14:44:05"
+    "last_page": 200,
+    "total_scraped": 6891,
+    "last_updated": "2026-10-16T17:35:43"
   },
   "recent_sessions": [
-    {
-      "session_id": "sess_20260930_021041_avito",
-      "scraper_name": "continuous_harvester",
-      "source": "avito",
-      "start_time": "2026-09-29 23:18:40",
-      "end_time": "2026-09-30 02:10:41",
-      "duration_seconds": 10320.99,
-      "pages_scraped": 5,
-      "page_range": {
-        "start": 74,
-        "end": 78
-      },
-      "records_extracted": 0,
-      "records_added": 0,
-      "duplicates_skipped": 0,
-      "cumulative_seen_ids": 54289,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20260930_060615_moteur",
-      "scraper_name": "continuous_harvester",
-      "source": "moteur",
-      "start_time": "2026-09-30 03:14:14",
-      "end_time": "2026-09-30 06:06:15",
-      "duration_seconds": 10321.17,
-      "pages_scraped": 1528,
-      "page_range": {
-        "start": 67,
-        "end": 95
-      },
-      "records_extracted": 14994,
-      "records_added": 7,
-      "duplicates_skipped": 14987,
-      "cumulative_seen_ids": 54298,
-      "status": "success",
-      "notes": ""
-    },
-    {
-      "session_id": "sess_20260930_060615_wandaloo",
-      "scraper_name": "continuous_harvester",
-      "source": "wandaloo",
-      "start_time": "2026-09-30 03:14:14",
-      "end_time": "2026-09-30 06:06:15",
-      "duration_seconds": 10321.17,
-      "pages_scraped": 1528,
-      "page_range": {
-        "start": 110,
-        "end": 138
-      },
-      "records_extracted": 357,
-      "records_added": 0,
-      "duplicates_skipped": 357,
-      "cumulative_seen_ids": 54298,
-      "status": "success",
-      "notes": ""
-    },
     {
       "session_id": "sess_20260930_060616_avito",
       "scraper_name": "continuous_harvester",
@@ -394,6 +337,63 @@
       "cumulative_seen_ids": 83182,
       "status": "success",
       "notes": "Parallel chunk part 1"
+    },
+    {
+      "session_id": "sess_20261016_184423_moteur",
+      "scraper_name": "continuous_harvester",
+      "source": "moteur",
+      "start_time": "2026-10-16 15:52:22",
+      "end_time": "2026-10-16 18:44:23",
+      "duration_seconds": 10321.12,
+      "pages_scraped": 1248,
+      "page_range": {
+        "start": 6,
+        "end": 254
+      },
+      "records_extracted": 15131,
+      "records_added": 637,
+      "duplicates_skipped": 14494,
+      "cumulative_seen_ids": 93030,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261016_184424_wandaloo",
+      "scraper_name": "continuous_harvester",
+      "source": "wandaloo",
+      "start_time": "2026-10-16 15:52:22",
+      "end_time": "2026-10-16 18:44:23",
+      "duration_seconds": 10321.12,
+      "pages_scraped": 1248,
+      "page_range": {
+        "start": 49,
+        "end": 97
+      },
+      "records_extracted": 404,
+      "records_added": 2,
+      "duplicates_skipped": 402,
+      "cumulative_seen_ids": 93030,
+      "status": "success",
+      "notes": ""
+    },
+    {
+      "session_id": "sess_20261016_184424_avito",
+      "scraper_name": "continuous_harvester",
+      "source": "avito",
+      "start_time": "2026-10-16 15:52:22",
+      "end_time": "2026-10-16 18:44:23",
+      "duration_seconds": 10321.12,
+      "pages_scraped": 631,
+      "page_range": {
+        "start": 94,
+        "end": 124
+      },
+      "records_extracted": 13543,
+      "records_added": 6305,
+      "duplicates_skipped": 7238,
+      "cumulative_seen_ids": 93030,
+      "status": "success",
+      "notes": ""
     }
   ],
   "marocannonces": {
