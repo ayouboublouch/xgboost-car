@@ -1,19 +1,19 @@
 {
-  "session_id": "sess_20261016_093506_auto24",
+  "session_id": "sess_20261017_090515_auto24",
   "scraper_name": "parallel_worker",
   "source": "auto24",
-  "start_time": "2026-10-16 09:35:05",
-  "end_time": "2026-10-16 09:35:06",
-  "duration_seconds": 1.2,
+  "start_time": "2026-10-17 09:05:14",
+  "end_time": "2026-10-17 09:05:15",
+  "duration_seconds": 1.03,
   "pages_scraped": 30,
   "page_range": {
     "start": 1,
     "end": 30
   },
-  "records_extracted": 60,
-  "records_added": 60,
+  "records_extracted": 58,
+  "records_added": 58,
   "duplicates_skipped": 0,
-  "cumulative_seen_ids": 85998,
+  "cumulative_seen_ids": 93396,
   "status": "success",
   "notes": "Parallel chunk part 1"
 }
